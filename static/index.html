@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f7fa">
+  <title>VPN Mini App</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="stylesheet" href="/static/style.css">
+  <script defer src="/static/translations.js"></script>
+  <script defer src="/static/app.js"></script>
+</head>
+<body>
+  <main class="shell">
+    <header><div class="brand-mark" aria-hidden="true">✦</div><span>VPN Mini App</span></header>
+    <nav aria-label="Навигация" data-i18n-aria="navigation">
+      <button type="button" data-tab="home" aria-selected="true" data-i18n="home"></button>
+      <button type="button" data-tab="settings" aria-selected="false" data-i18n="settings"></button>
+    </nav>
+    <p id="mode" class="notice" hidden></p>
+    <section id="home" class="panel">
+      <div class="eyebrow" data-i18n="eyebrow"></div>
+      <h1 data-i18n="welcome"></h1>
+      <p class="lead" data-i18n="intro"></p>
+      <div class="info"><span class="dot"></span><span data-i18n="development"></span></div>
+    </section>
+    <section id="settings" class="panel" hidden>
+      <div class="eyebrow" data-i18n="settings"></div>
+      <h1 data-i18n="language"></h1>
+      <p class="lead" data-i18n="languageHelp"></p>
+      <div id="languages" class="languages" role="group" data-i18n-aria="language"></div>
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+    </section>
+  </main>
+</body>
+</html>

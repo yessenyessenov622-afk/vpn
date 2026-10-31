@@ -1,0 +1,27 @@
+:root { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #192634; background: #f5f7fa; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+button { font: inherit; }
+.shell { width: min(100%, 560px); margin: auto; padding: 28px 20px 50px; }
+header { display: flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 750; letter-spacing: .01em; }
+.brand-mark { display: grid; place-items: center; color: white; background: #306bca; width: 34px; height: 34px; border-radius: 11px; font-size: 20px; }
+nav { display: flex; gap: 6px; margin: 30px 0 20px; padding: 5px; background: #e8edf4; border-radius: 14px; }
+nav button { flex: 1; border: 0; border-radius: 10px; padding: 11px; background: transparent; color: #536579; cursor: pointer; font-weight: 650; }
+nav button[aria-selected="true"] { background: #fff; color: #1d4f9d; box-shadow: 0 2px 8px #1d3d6414; }
+.panel { background: #fff; border: 1px solid #e2e9f1; border-radius: 22px; padding: 28px; box-shadow: 0 12px 32px #1e41620a; }
+.panel[hidden], [hidden] { display: none; }
+.eyebrow { font-size: 12px; font-weight: 750; letter-spacing: .1em; text-transform: uppercase; color: #3772c8; }
+h1 { margin: 14px 0 12px; font-size: clamp(26px, 7vw, 34px); line-height: 1.15; letter-spacing: -.03em; }
+.lead { color: #5b6c7c; line-height: 1.55; }
+.info, .notice { border-radius: 13px; background: #eef5ff; color: #365779; line-height: 1.5; padding: 15px; font-size: 14px; }
+.info { display: flex; align-items: baseline; gap: 10px; margin-top: 28px; }
+.dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: #4f8be1; }
+.notice { margin: 0 0 16px; background: #fff7e8; color: #745423; }
+.languages { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; margin-top: 22px; }
+.languages button { display: flex; justify-content: space-between; align-items: center; gap: 8px; text-align: left; min-height: 48px; padding: 10px 12px; background: #fff; color: #344659; border: 1px solid #dce5ef; border-radius: 11px; cursor: pointer; }
+.languages button[aria-pressed="true"] { color: #1d579f; background: #eef5ff; border-color: #6095de; font-weight: 700; }
+button:focus-visible { outline: 3px solid #7ba9ec; outline-offset: 2px; }
+button:disabled { cursor: wait; opacity: .7; }
+.status { min-height: 1.5em; margin: 14px 0 0; color: #3d6b50; font-size: 14px; }
+.status.error { color: #a13636; }
+@media (max-width: 370px) { .panel { padding: 22px 18px; } .languages { grid-template-columns: 1fr; } }
