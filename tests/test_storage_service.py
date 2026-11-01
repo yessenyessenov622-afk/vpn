@@ -4,6 +4,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from contextlib import closing
 from pathlib import Path
 
@@ -12,6 +13,16 @@ from storage.service import execute
 
 
 class StorageTests(unittest.TestCase):
+    def test_vpn_controller_is_opt_in(self):
+        command = {"action": "vpn_request", "user_id": 123, "public_key": "example"}
+        with patch.dict('os.environ', {}, clear=True), patch('storage.service.vpn_provision.request_access', return_value={"status": "unavailable"}) as request:
+            execute(command, 'unused')
+            self.assertIsNone(request.call_args.kwargs['controller'])
+        with patch.dict('os.environ', {'VPN_LOCAL_CONTROLLER': '1'}, clear=True), patch('storage.service.vpn_provision.request_access', return_value={"status": "unavailable"}) as request:
+            execute(command, 'unused')
+            from app.wg_controller import LocalWireGuardController
+            self.assertIsInstance(request.call_args.kwargs['controller'], LocalWireGuardController)
+
     def test_languages_are_persistent_and_separate(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "test.sqlite3"

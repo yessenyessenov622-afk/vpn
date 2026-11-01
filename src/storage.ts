@@ -4,6 +4,7 @@ import { Language, isLanguage } from "./translations";
 
 export interface Subscription { started_at: number; expires_at: number }
 export interface VPNResponse { status: string; address?: string; server_public_key?: string; endpoint?: string }
+export interface VPNAlert { user_id: number; action: string; code: string; active: number; occurred_at: number; resolved_at: number | null; version: number; phase: "failure" | "resolved" }
 type Pending = { resolve: (value: any) => void; reject: (error: Error) => void };
 
 // Один процесс, одна очередь запросов: Python отвечает в том же порядке.
@@ -16,7 +17,7 @@ export class Storage {
     const env: NodeJS.ProcessEnv = { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONDONTWRITEBYTECODE: "1" };
     delete env.BOT_TOKEN;
     this.process = spawn("python", ["-u", "storage/service.py"], { env, cwd });
-    this.process.stderr.on("data", () => { /* Не выводим возможные чувствительные данные. */ });
+    this.process.stderr.on("data", data => { if (String(data).includes("VPN_RECONCILE_SCAN_ERROR")) console.error("VPN_RECONCILE_SCAN_ERROR"); });
     this.process.on("error", () => this.fail());
     this.process.on("exit", () => this.fail());
     this.process.stdin.on("error", () => this.fail());
@@ -76,6 +77,15 @@ export class Storage {
     if (!value || !["invalid_key", "inactive", "device_exists", "key_in_use", "ip_in_use", "unavailable", "unconfirmed", "confirmed"].includes(value.status)) throw new Error("Invalid storage response");
     if (value.status === "confirmed" && (typeof value.address !== "string" || typeof value.server_public_key !== "string" || typeof value.endpoint !== "string")) throw new Error("Invalid storage response");
     return value;
+  }
+  async alertsDue(): Promise<VPNAlert[]> {
+    const value = (await this.request({action: "alerts_due"})).value;
+    if (!Array.isArray(value)) throw new Error("Invalid alerts response");
+    return value;
+  }
+  async alertsAck(event: VPNAlert): Promise<void> {
+    const value = (await this.request({action: "alerts_ack", event})).value;
+    if (value !== true) throw new Error("Invalid alert acknowledgement");
   }
   close(): Promise<void> {
     if (this.stopped) return Promise.resolve();

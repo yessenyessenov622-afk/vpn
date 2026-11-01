@@ -1,0 +1,26 @@
+[Unit]
+Description=Telegram VPN bot
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=telegram-vpn-bot
+Group=telegram-vpn-bot
+WorkingDirectory=/opt/telegram-vpn-bot
+# dotenv loads /opt/telegram-vpn-bot/.env using the same rules as on Windows.
+Environment=PATH=/opt/telegram-vpn-bot/.venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=NODE_ENV=production
+Environment=VPN_LOCAL_CONTROLLER=1
+ExecStart=/usr/bin/node /opt/telegram-vpn-bot/dist/bot.js
+Restart=on-failure
+RestartSec=5
+UMask=0077
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/telegram-vpn-bot
+ReadWritePaths=/etc/wireguard /var/lib/telegram-vpn-controller
+
+[Install]
+WantedBy=multi-user.target

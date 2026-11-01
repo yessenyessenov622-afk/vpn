@@ -1,4 +1,4 @@
-"""Подготовка выдачи VPN. Реального контроллера на этом этапе нет.
+"""Проверка подписки и подготовка выдачи VPN.
 
 Контроллер должен проверять адрес и ключ на сервере под общей блокировкой,
 проверять срок подписки и возвращать подтверждение только после сохранения
@@ -10,7 +10,7 @@ import sqlite3
 import time
 from contextlib import closing
 
-from app import vpn_devices, vpn_policy
+from app import vpn_devices, vpn_policy, vpn_alerts
 
 POOL = ipaddress.ip_network("10.77.0.0/24")
 SERVER_ID = "primary"
@@ -46,8 +46,7 @@ def request_access(user_id, public_key, *, controller=None, path=None, clock=tim
             if controller is None:
                 db.rollback()
                 return {"status": "unavailable"}
-            # Реальный контроллер здесь не реализован; ошибки его проверки
-            # не интерпретируем как разрешение доступа.
+            # Ошибки проверки не интерпретируем как разрешение доступа.
             try:
                 peers = controller.list_peers()
                 details = controller.server_details()
@@ -64,7 +63,8 @@ def request_access(user_id, public_key, *, controller=None, path=None, clock=tim
                 if not isinstance(endpoint, str) or not endpoint or len(endpoint) > 255 or any(c.isspace() for c in endpoint):
                     raise ValueError("invalid endpoint")
             except Exception:
-                db.rollback()
+                vpn_alerts.report(db, user_id, 'check', 'controller_error', int(clock()))
+                db.commit()
                 return {"status": "unavailable"}
 
             previous_ip = existing["vpn_ip"] if existing else None
@@ -91,6 +91,11 @@ def request_access(user_id, public_key, *, controller=None, path=None, clock=tim
                 else:
                     db.execute("INSERT INTO vpn_devices(user_id,public_key,created_at,updated_at,vpn_ip,server_id) VALUES(?,?,?,?,?,?)", (user_id, key, now, now, address, SERVER_ID))
 
+            # Сохраняем назначение до обращения к серверу. Если процесс завершится
+            # после изменения WireGuard, повторный запрос сможет сверить тот же
+            # ключ и адрес, а другой пользователь не получит этот адрес.
+            db.commit()
+            db.execute("BEGIN IMMEDIATE")
             # Повторно проверяем срок перед возможной выдачей.
             expiry = db.execute("SELECT expires_at FROM test_subscriptions WHERE user_id = ?", (user_id,)).fetchone()[0]
             if expiry <= int(clock()):
@@ -98,19 +103,26 @@ def request_access(user_id, public_key, *, controller=None, path=None, clock=tim
                 return {"status": "inactive"}
             device = vpn_policy.Device(user_id=user_id, device_id=key, prepared=True, access_enabled=key in peers)
             action = vpn_policy.decide(device, vpn_policy.Subscription(user_id=user_id, expires_at=expiry), now=int(clock())).action
+            error_code = 'controller_error'
             try:
                 if action is vpn_policy.Action.ENABLE:
                     # Операция должна быть идемпотентной и атомарно проверять
                     # отсутствие конфликта непосредственно на сервере.
                     if controller.add_if_free(key, address, expiry) is not True:
+                        error_code = 'unconfirmed'
                         raise RuntimeError("unconfirmed")
                 if controller.list_peers().get(key) != address or expiry <= int(clock()):
+                    error_code = 'unconfirmed'
                     raise RuntimeError("unconfirmed or expired")
             except Exception:
-                db.execute("UPDATE vpn_devices SET last_error = 'confirmation_lost', updated_at = ? WHERE user_id = ?", (int(clock()), user_id))
+                error_time = int(clock())
+                db.execute("UPDATE vpn_devices SET last_error = 'confirmation_lost', updated_at = ? WHERE user_id = ?", (error_time, user_id))
+                vpn_alerts.report(db, user_id, 'enable', error_code, error_time)
                 db.commit()
                 return {"status": "unconfirmed"}
-            db.execute("UPDATE vpn_devices SET access_state = 'allowed', last_error = NULL, updated_at = ? WHERE user_id = ?", (int(clock()), user_id))
+            confirmed_time = int(clock())
+            db.execute("UPDATE vpn_devices SET access_state = 'allowed', last_error = NULL, updated_at = ? WHERE user_id = ?", (confirmed_time, user_id))
+            vpn_alerts.resolve(db, user_id, confirmed_time)
             db.commit()
             return {"status": "confirmed", "address": address, "server_public_key": server_key, "endpoint": endpoint}
         except (sqlite3.Error, ValueError, KeyError):

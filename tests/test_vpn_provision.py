@@ -113,6 +113,28 @@ class VPNProvisionTests(unittest.TestCase):
         self.assertEqual(self.controller.adds, 1)
         self.assertEqual(vpn_devices.get_device(101, path=self.db)["access_state"], "allowed")
 
+    def test_process_interruption_keeps_reservation_for_retry(self):
+        class Interrupted(BaseException):
+            pass
+
+        original = self.controller.add_if_free
+
+        def interrupted_after_add(public_key, address, expires_at):
+            original(public_key, address, expires_at)
+            raise Interrupted()
+
+        self.controller.add_if_free = interrupted_after_add
+        with self.assertRaises(Interrupted):
+            self.request(101, key(1))
+        device = vpn_devices.get_device(101, path=self.db)
+        with closing(sqlite3.connect(self.db)) as conn:
+            address = conn.execute("SELECT vpn_ip FROM vpn_devices WHERE user_id = 101").fetchone()[0]
+        self.assertEqual(address, "10.77.0.3/32")
+        self.assertEqual(device["access_state"], "unknown")
+        self.controller.add_if_free = original
+        self.assertEqual(self.request(101, key(1))["status"], "confirmed")
+        self.assertEqual(self.request(202, key(2))["address"], "10.77.0.4/32")
+
     def test_timeout_without_server_response_is_not_success(self):
         self.controller.fail = "list"
         self.assertEqual(self.request(101, key(1))["status"], "unavailable")

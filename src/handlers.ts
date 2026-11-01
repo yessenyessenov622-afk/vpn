@@ -78,6 +78,19 @@ export function createBot(token: string, storage: LanguageStorage, adminId: numb
     await ctx.reply(translations[language].help, { reply_markup: menu(language) });
   });
   bot.command("language", async ctx => { states.delete(ctx.from!.id); await showChoices(ctx); });
+  bot.command("test_alert", async ctx => {
+    if (ctx.from!.id !== adminId || ctx.chat?.type !== "private" || ctx.chat.id !== adminId) {
+      const language = await currentLanguage(ctx);
+      await ctx.reply(subscriptionTranslations[language].forbidden);
+      return;
+    }
+    try {
+      await ctx.api.sendMessage(adminId, "🔔 Проверка уведомлений\nЭто тестовое сообщение. Уведомления администратора работают.");
+    } catch (_) {
+      console.error("VPN_TEST_ALERT_DELIVERY_FAILED");
+      await ctx.reply("Не удалось отправить тестовое уведомление. Проверьте доступ бота к личному чату и попробуйте позже.").catch(() => undefined);
+    }
+  });
   bot.command("grant_test", async ctx => {
     if (ctx.from!.id !== adminId) {
       const language = await currentLanguage(ctx);

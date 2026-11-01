@@ -77,9 +77,10 @@ async function testHandlers(): Promise<void> {
   const bot = createBot("123456:example", storage, admin);
   bot.botInfo = { id: 123456, is_bot: true, first_name: "Test", username: "test_bot", can_join_groups: true, can_read_all_group_messages: false, supports_inline_queries: false, can_connect_to_business: false, has_main_web_app: false };
   const calls: Array<{ method: string; payload: any }> = [];
-  let failRecipient: number | null = null;
+  let failRecipient: number | null = null, failTestAlertOnce = false;
   bot.api.config.use(async (_previous, method, payload) => {
     calls.push({ method, payload });
+    if (method === "sendMessage" && failTestAlertOnce && (payload as any).text?.includes("🔔 Проверка уведомлений")) { failTestAlertOnce = false; throw new Error("Simulated delivery failure"); }
     if (method === "sendMessage" && (payload as any).chat_id === failRecipient) throw new Error("Simulated delivery failure");
     if (method === "sendMessage") return { ok: true, result: { message_id: calls.length } } as any;
     if (method === "answerCallbackQuery") return { ok: true, result: true } as any;
@@ -95,6 +96,23 @@ async function testHandlers(): Promise<void> {
   }
   const sent = () => calls.filter(call => call.method === "sendMessage");
   const last = () => sent()[sent().length - 1].payload;
+
+  await message(admin, "/test_alert");
+  assert.equal(last().chat_id, admin);
+  assert.ok(last().text.includes("Это тестовое сообщение"));
+  const testAlerts = () => sent().filter(call => call.payload.text.includes("🔔 Проверка уведомлений"));
+  const alertsBefore = testAlerts().length;
+  await message(one, "/test_alert");
+  assert.equal(last().text, subscriptionTranslations.ru.forbidden);
+  assert.equal(testAlerts().length, alertsBefore);
+  const callsBeforeGroup = calls.length;
+  await bot.handleUpdate({update_id: ++updateId, message: {message_id: updateId, date: 1700000000, chat: {id: -100, type: "group", title: "Test"}, from: {id: admin, is_bot: false, first_name: "Admin"}, text: "/test_alert", entities: [{type: "bot_command", offset: 0, length: 11}]}} as any);
+  assert.equal(calls.length, callsBeforeGroup);
+  failTestAlertOnce = true;
+  await message(admin, "/test_alert");
+  assert.ok(last().text.includes("Не удалось отправить тестовое уведомление"));
+  assert.equal(grants, 0);
+  assert.equal(vpnCalls, 0);
 
   await message(one, "/language");
   assert.equal(last().text, translations.ru.choose);
@@ -257,7 +275,7 @@ async function testHandlers(): Promise<void> {
 
 async function testPythonBridge(): Promise<void> {
   const temp = mkdtempSync(join(tmpdir(), "vpn-bot-test-"));
-  const files = ["app/__init__.py", "app/database.py", "app/vpn_devices.py", "app/vpn_policy.py", "app/vpn_provision.py", "storage/service.py"];
+  const files = ["app/__init__.py", "app/database.py", "app/vpn_devices.py", "app/vpn_policy.py", "app/vpn_provision.py", "app/vpn_alerts.py", "storage/service.py"];
   mkdirSync(join(temp, "app"));
   mkdirSync(join(temp, "storage"));
   for (const file of files) copyFileSync(file, join(temp, file));
@@ -287,5 +305,22 @@ async function testPythonBridge(): Promise<void> {
   }
 }
 
-async function main(): Promise<void> { await testHandlers(); await testPythonBridge(); }
+async function testAlertDelivery(): Promise<void> {
+  const { AlertDispatcher } = await import("./alerts");
+  const event = {user_id: 101, action: "revoke", code: "unconfirmed", active: 1, occurred_at: 1000, resolved_at: null, version: 1, phase: "failure" as const};
+  let pending = true, attempts = 0, acknowledged = 0;
+  const dispatcher = new AlertDispatcher({
+    alertsDue: async () => pending ? [event] : [],
+    alertsAck: async () => { acknowledged++; pending = false; },
+  }, async () => { attempts++; if (attempts === 1) throw new Error("delivery failure"); });
+  await dispatcher.run();
+  assert.equal(acknowledged, 0);
+  await dispatcher.run();
+  assert.equal(acknowledged, 1);
+  await dispatcher.run();
+  assert.equal(attempts, 2);
+  console.log("Уведомления: ошибка доставки и повторная попытка OK");
+}
+
+async function main(): Promise<void> { await testHandlers(); await testPythonBridge(); await testAlertDelivery(); }
 main().catch(error => { console.error(error); process.exitCode = 1; });

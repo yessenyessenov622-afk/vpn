@@ -18,3 +18,10 @@ java/build/
 *.key
 *.p12
 *.pfx
+
+# Local backups and configuration
+backups/
+github-export/
+*.enc
+.env.*
+!.env.example

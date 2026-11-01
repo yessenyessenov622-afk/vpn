@@ -12,6 +12,12 @@ def initialize(path=DATABASE_PATH):
             connection.execute("CREATE TABLE IF NOT EXISTS user_settings (user_id INTEGER PRIMARY KEY, language TEXT NOT NULL)")
             connection.execute("CREATE TABLE IF NOT EXISTS registered_users (user_id INTEGER PRIMARY KEY)")
             connection.execute("CREATE TABLE IF NOT EXISTS test_subscriptions (user_id INTEGER PRIMARY KEY, started_at INTEGER NOT NULL, expires_at INTEGER NOT NULL)")
+            connection.execute("""CREATE TABLE IF NOT EXISTS vpn_alerts (
+                user_id INTEGER NOT NULL, action TEXT NOT NULL, code TEXT NOT NULL,
+                active INTEGER NOT NULL, occurred_at INTEGER NOT NULL, resolved_at INTEGER,
+                last_sent INTEGER, notified INTEGER NOT NULL DEFAULT 0, version INTEGER NOT NULL,
+                PRIMARY KEY(user_id, action, code)
+            )""")
             connection.execute("""CREATE TABLE IF NOT EXISTS vpn_devices (
                 user_id INTEGER PRIMARY KEY REFERENCES registered_users(user_id),
                 public_key TEXT NOT NULL UNIQUE,
