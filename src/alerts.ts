@@ -6,6 +6,10 @@ const actions: Record<string, string> = {check: "проверка устройс
 const codes = new Set(["controller_error", "unconfirmed", "conflict", "scan_error"]);
 const reasons: Record<string, string> = {controller_error: "Контроллер недоступен или отклонил запрос", unconfirmed: "Сервер не подтвердил операцию", conflict: "Обнаружен конфликт ключа или адреса", scan_error: "Фоновая проверка завершилась с ошибкой"};
 
+export function formatTestQueueMessage(text: string): string {
+  return `🧪 ТЕСТ ОЧЕРЕДИ — реальной ошибки VPN нет.\n\n${text}`;
+}
+
 export function formatAlert(event: VPNAlert): string {
   if (!(event.action in actions) || !codes.has(event.code) || !Number.isSafeInteger(event.user_id) || event.user_id < 0 || !["failure", "resolved"].includes(event.phase)) throw new Error("Invalid alert");
   const when = event.phase === "resolved" ? event.resolved_at : event.occurred_at;

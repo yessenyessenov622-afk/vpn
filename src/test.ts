@@ -9,6 +9,7 @@ import { Storage, Subscription } from "./storage";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmdirSync, unlinkSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { spawnSync } from "child_process";
 import { plans } from "./plans";
 import { planTranslations } from "./plan-translations";
 import { vpnTranslations } from "./vpn-translations";
@@ -306,8 +307,11 @@ async function testPythonBridge(): Promise<void> {
 }
 
 async function testAlertDelivery(): Promise<void> {
-  const { AlertDispatcher } = await import("./alerts");
+  const { AlertDispatcher, formatTestQueueMessage } = await import("./alerts");
   const event = {user_id: 101, action: "revoke", code: "unconfirmed", active: 1, occurred_at: 1000, resolved_at: null, version: 1, phase: "failure" as const};
+  const formatted = formatTestQueueMessage("Проверка");
+  assert.equal(formatted, "🧪 ТЕСТ ОЧЕРЕДИ — реальной ошибки VPN нет.\n\nПроверка");
+  assert.ok(!formatted.includes("\\n"));
   let pending = true, attempts = 0, acknowledged = 0;
   const dispatcher = new AlertDispatcher({
     alertsDue: async () => pending ? [event] : [],
@@ -322,5 +326,37 @@ async function testAlertDelivery(): Promise<void> {
   console.log("Уведомления: ошибка доставки и повторная попытка OK");
 }
 
-async function main(): Promise<void> { await testHandlers(); await testPythonBridge(); await testAlertDelivery(); }
+async function testAlertQueueIntegration(): Promise<void> {
+  const { AlertDispatcher, formatTestQueueMessage } = await import("./alerts");
+  const temp = mkdtempSync(join(tmpdir(), "vpn-alert-test-"));
+  const files = ["app/__init__.py", "app/database.py", "app/vpn_devices.py", "app/vpn_policy.py", "app/vpn_provision.py", "app/vpn_alerts.py", "app/vpn_reconcile.py", "storage/service.py"];
+  mkdirSync(join(temp, "app")); mkdirSync(join(temp, "storage"));
+  for (const file of files) copyFileSync(file, join(temp, file));
+  const setup = `import base64,sqlite3,time\nfrom app import database,vpn_reconcile\np='users.sqlite3'; now=int(time.time()); database.initialize(p); database.register_user(101,p)\nk=base64.b64encode(bytes([1])*32).decode()\nwith sqlite3.connect(p) as c:\n c.execute("INSERT INTO test_subscriptions VALUES(101,?,?)",(now-100,now-1))\n c.execute("INSERT INTO vpn_devices(user_id,public_key,created_at,updated_at,access_state,vpn_ip,server_id) VALUES(101,?,?,?,'allowed','10.77.0.3/32','primary')",(k,now,now))\nclass C:\n def is_owned(self,k,a): return True\n def list_peers(self): raise TimeoutError()\nassert vpn_reconcile.reconcile_one(101,C(),path=p)=='error'`;
+  const runPython = (script: string) => { const result = spawnSync("python", ["-c", script], {cwd: temp, env: {...process.env, PYTHONDONTWRITEBYTECODE: "1"}}); assert.equal(result.status, 0); };
+  let storage: Storage | undefined;
+  try {
+    runPython(setup);
+    storage = new Storage(temp);
+    let attempts = 0; const sent: string[] = [];
+    const send = async (text: string) => { attempts++; if (attempts === 1) throw new Error("Telegram unavailable"); sent.push(formatTestQueueMessage(text)); };
+    let dispatcher = new AlertDispatcher(storage, send);
+    await dispatcher.run(); assert.equal((await storage.alertsDue()).length, 1);
+    await dispatcher.run(); assert.equal(sent.length, 1); assert.ok(sent[0].includes("101")); assert.ok(sent[0].includes("нет.\n\n⚠️"));
+    await dispatcher.run(); assert.equal(sent.length, 1);
+    await storage.close(); storage = new Storage(temp); dispatcher = new AlertDispatcher(storage, send);
+    assert.equal((await storage.alertsDue()).length, 0);
+    runPython("import sqlite3,time\nwith sqlite3.connect('users.sqlite3') as c: c.execute('UPDATE vpn_alerts SET last_sent=?',(int(time.time())-3600,))");
+    await dispatcher.run(); assert.equal(sent.length, 2);
+    runPython("import sqlite3,time\nfrom app import vpn_alerts\nwith sqlite3.connect('users.sqlite3') as c: vpn_alerts.resolve(c,101,int(time.time()))");
+    await dispatcher.run(); await dispatcher.run(); assert.equal(sent.length, 3); assert.ok(sent[2].includes("Проблема устранена"));
+    console.log("Очередь SQLite + Python + отправка и восстановление: OK");
+  } finally {
+    if (storage) await storage.close();
+    for (const file of [...files, "users.sqlite3"]) { const target = join(temp, file); if (existsSync(target)) unlinkSync(target); }
+    rmdirSync(join(temp, "app")); rmdirSync(join(temp, "storage")); rmdirSync(temp);
+  }
+}
+
+async function main(): Promise<void> { await testHandlers(); await testPythonBridge(); await testAlertDelivery(); await testAlertQueueIntegration(); }
 main().catch(error => { console.error(error); process.exitCode = 1; });
