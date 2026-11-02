@@ -1,11 +1,14 @@
 import { Bot, Context, InlineKeyboard, Keyboard } from "grammy";
 import { initialLanguage, isLanguage, languageNames, Language, translations } from "./translations";
 import { supportTranslations } from "./support-translations";
-import { describeSubscription, subscriptionTranslations, utcDate } from "./subscription-translations";
-import { Subscription, VPNResponse } from "./storage";
+import { describeSubscriptionView, subscriptionTranslations, utcDate } from "./subscription-translations";
+import { Subscription, SubscriptionView, VPNResponse } from "./storage";
+import { paymentTranslations } from "./payment-translations";
 import { plans } from "./plans";
 import { planTranslations } from "./plan-translations";
 import { vpnTranslations } from "./vpn-translations";
+import { paymentPlans, starsPrice } from "./payment-plans";
+import { executeRefund } from "./refund-flow";
 
 export const SUPPORT_MAX_LENGTH = 3000;
 export interface LanguageStorage {
@@ -13,8 +16,16 @@ export interface LanguageStorage {
   set(userId: number, language: Language): Promise<void>;
   register(userId: number): Promise<void>;
   subscription(userId: number): Promise<Subscription | null>;
+  subscriptionView?(userId: number): Promise<SubscriptionView>;
   grant(userId: number, days: number): Promise<Subscription | null>;
   vpnRequest(userId: number, publicKey: string): Promise<VPNResponse>;
+  paymentOrder?(userId: number, planId: string, amount: number): Promise<any>;
+  paymentValidate?(userId: number, orderId: string, currency: string, amount: number): Promise<boolean>;
+  paymentApply?(userId: number, orderId: string, currency: string, amount: number, chargeId: string): Promise<any>;
+  refundPrepare?(adminId: number, userId: number, chargeId: string): Promise<{status: string; recalc_status: string}>;
+  refundBegin?(adminId: number, userId: number, chargeId: string): Promise<{status: string; ready?: boolean; amount?: number; currency?: string}>;
+  refundConfirm?(userId: number, chargeId: string, amount: number, currency: string, orderId?: string): Promise<string>;
+  refundReject?(adminId: number, userId: number, chargeId: string): Promise<boolean>;
 }
 type State = { kind: "request" } | { kind: "reply"; userId: number; fallbackLanguage: Language } | { kind: "vpn" };
 
@@ -56,6 +67,20 @@ export function createBot(token: string, storage: LanguageStorage, adminId: numb
     await ctx.reply(t.list, { reply_markup: keyboard });
   }
 
+  bot.on("pre_checkout_query", async ctx => {
+    const q = ctx.preCheckoutQuery;
+    const languagePromise = storage.get(q.from.id).catch(() => null);
+    let ok = false;
+    try {
+      ok = !!storage.paymentValidate && await Promise.race([
+        storage.paymentValidate(q.from.id, q.invoice_payload, q.currency, q.total_amount),
+        new Promise<boolean>(resolve => setTimeout(() => resolve(false), 7000)),
+      ]);
+    } catch (_) { /* fail closed */ }
+    const language = await Promise.race([languagePromise, new Promise<null>(resolve => setTimeout(() => resolve(null), 500))]);
+    await ctx.answerPreCheckoutQuery(ok, ok ? undefined : {error_message: paymentTranslations[language || initialLanguage(q.from.language_code)].checkoutError});
+  });
+
   bot.use(async (ctx, next) => {
     if (ctx.chat?.type !== "private" || !ctx.from) return;
     try { await storage.register(ctx.from.id); await next(); }
@@ -78,6 +103,70 @@ export function createBot(token: string, storage: LanguageStorage, adminId: numb
     await ctx.reply(translations[language].help, { reply_markup: menu(language) });
   });
   bot.command("language", async ctx => { states.delete(ctx.from!.id); await showChoices(ctx); });
+  bot.command("paysupport", async ctx => {
+    const language = await currentLanguage(ctx);
+    await ctx.reply(paymentTranslations[language].support, {reply_markup: menu(language)});
+  });
+  bot.command("refund_prepare", async ctx => {
+    if (ctx.from!.id !== adminId || ctx.chat?.type !== 'private' || ctx.chat.id !== adminId) return;
+    const parts = ctx.match.trim().split(/\s+/);
+    const user = parts.length === 2 && /^[1-9]\d*$/.test(parts[0]) ? Number(parts[0]) : NaN;
+    if (!Number.isSafeInteger(user) || user > 2 ** 52 || !parts[1] || parts[1].length > 255 || !storage.refundPrepare) {
+      await ctx.reply('Формат: /refund_prepare ID_пользователя ID_платежа. Реальные возвраты отключены.'); return;
+    }
+    try {
+      const result = await storage.refundPrepare(adminId, user, parts[1]);
+      const labels: Record<string,string> = {prepared:'подготовлен', uncertain:'результат неизвестен — нужна сверка истории', rejected:'отклонён Telegram', confirmed:'подтверждён Telegram'};
+      const recalculation = result.recalc_status === 'manual_review' ? ' Пересчёт требует ручной проверки.' : result.recalc_status === 'applied' ? ' Срок пересчитан.' : '';
+      await ctx.reply(`Статус возврата: ${labels[result.status] || 'неизвестен'}.${recalculation} Реальные возвраты отключены.`);
+    } catch (_) { await ctx.reply('Не удалось подготовить возврат: проверьте пользователя и платёж. Реальные возвраты отключены.'); }
+  });
+  bot.command("refund_execute", async ctx => {
+    if (ctx.from!.id !== adminId || ctx.chat?.type !== 'private' || ctx.chat.id !== adminId) return;
+    // Hard-coded safety gate: environment variables cannot enable real refunds.
+    const realRefundsEnabled: boolean = false;
+    if (!realRefundsEnabled) { await ctx.reply('Реальные возвраты принудительно отключены.'); return; }
+    const parts = ctx.match.trim().split(/\s+/), user = Number(parts[0]);
+    if (parts.length !== 2 || !/^[1-9]\d*$/.test(parts[0]) || !Number.isSafeInteger(user) || user > 2**52 || !parts[1] || parts[1].length > 255 || !storage.refundBegin || !storage.refundConfirm || !storage.refundReject) {
+      await ctx.reply('Формат: /refund_execute ID_пользователя ID_платежа.'); return;
+    }
+    try {
+      const result = await executeRefund({refundBegin: storage.refundBegin.bind(storage), refundConfirm: storage.refundConfirm.bind(storage), refundReject: storage.refundReject.bind(storage)}, adminId, user, parts[1], (id, charge) => ctx.api.refundStarPayment(id, charge));
+      await ctx.reply(`Состояние возврата: ${result}. При неопределённости проверьте историю Stars и не повторяйте запрос.`);
+    } catch (_) { await ctx.reply('Операция не подтверждена. Проверьте историю Stars и состояние возврата; не повторяйте запрос автоматически.'); }
+  });
+  bot.command("buy", async ctx => {
+    const language = await currentLanguage(ctx);
+    const plan = paymentPlans.find(p => p.id === ctx.match.trim());
+    const price = plan ? starsPrice(process.env[plan.priceEnv]) : null;
+    // This stage is local preparation only; a deliberate code change is required before real invoices.
+    const salesReady = false;
+    if (!plan || !salesReady || process.env.STARS_PAYMENTS_ENABLED !== "1" || price === null || !storage.paymentOrder) {
+      await ctx.reply(paymentTranslations[language].unavailable); return;
+    }
+    try {
+      const order = await storage.paymentOrder(ctx.from!.id, plan.id, price);
+      const label = `${plan.days} ${planTranslations[language].days}`;
+      await ctx.replyWithInvoice(label, `${paymentTranslations[language].paid}: ${label}`, order.order_id, "XTR", [{label, amount: price}]);
+    } catch (_) { await ctx.reply(paymentTranslations[language].invoiceError); }
+  });
+  bot.on("message:successful_payment", async ctx => {
+    const p = ctx.message.successful_payment;
+    const language = await currentLanguage(ctx).catch(() => initialLanguage(ctx.from.language_code));
+    try {
+      if (!storage.paymentApply) throw new Error();
+      const result = await storage.paymentApply(ctx.from.id, p.invoice_payload, p.currency, p.total_amount, p.telegram_payment_charge_id);
+      if (result.status === "pending") {
+        await ctx.reply(paymentTranslations[language].pending); return;
+      }
+      if (result.status !== "paid" && result.status !== "duplicate") throw new Error();
+      await ctx.reply(paymentTranslations[language].recorded);
+    } catch (_) {
+      console.error("PAYMENT_FULFILLMENT_FAILED");
+      await ctx.api.sendMessage(adminId, `Ошибка записи подтверждённого платежа. Код: payment_storage_error. ID пользователя: ${ctx.from.id}. Проверьте платёж вручную через Telegram.`).catch(() => undefined);
+      await ctx.reply(paymentTranslations[language].failed).catch(() => undefined);
+    }
+  });
   bot.command("test_alert", async ctx => {
     if (ctx.from!.id !== adminId || ctx.chat?.type !== "private" || ctx.chat.id !== adminId) {
       const language = await currentLanguage(ctx);
@@ -238,7 +327,8 @@ export function createBot(token: string, storage: LanguageStorage, adminId: numb
     }
     if (Object.values(planTranslations).some(item => item.button === text)) { await showPlans(ctx, language); return; }
     if (Object.values(subscriptionTranslations).some(item => item.button === text)) {
-      await ctx.reply(describeSubscription(await storage.subscription(userId), language));
+      const view = storage.subscriptionView ? await storage.subscriptionView(userId) : {subscription: await storage.subscription(userId), source: "unknown" as const, vpn: "unknown" as const};
+      await ctx.reply(describeSubscriptionView(view, language));
       return;
     }
     if (Object.values(supportTranslations).some(item => item.button === text)) {

@@ -3,6 +3,7 @@ import { createInterface } from "readline";
 import { Language, isLanguage } from "./translations";
 
 export interface Subscription { started_at: number; expires_at: number }
+export interface SubscriptionView { subscription: Subscription | null; source: "test" | "paid" | "mixed" | "unknown"; vpn: "none" | "unknown" | "allowed" | "revoked" }
 export interface VPNResponse { status: string; address?: string; server_public_key?: string; endpoint?: string }
 export interface VPNAlert { user_id: number; action: string; code: string; active: number; occurred_at: number; resolved_at: number | null; version: number; phase: "failure" | "resolved" }
 type Pending = { resolve: (value: any) => void; reject: (error: Error) => void };
@@ -67,6 +68,11 @@ export class Storage {
     const response = await this.request({ action: "subscription", user_id: userId });
     return this.subscriptionResponse(response.value);
   }
+  async subscriptionView(userId: number): Promise<SubscriptionView> {
+    const value = (await this.request({action: "subscription_view", user_id: userId})).value;
+    if (!value || !["test", "paid", "mixed", "unknown"].includes(value.source) || !["none", "unknown", "allowed", "revoked"].includes(value.vpn)) throw new Error("Invalid storage response");
+    return {subscription: this.subscriptionResponse(value.subscription), source: value.source, vpn: value.vpn};
+  }
   async grant(userId: number, days: number): Promise<Subscription | null> {
     const response = await this.request({ action: "grant", user_id: userId, days });
     return this.subscriptionResponse(response.value);
@@ -87,6 +93,31 @@ export class Storage {
     const value = (await this.request({action: "alerts_ack", event})).value;
     if (value !== true) throw new Error("Invalid alert acknowledgement");
   }
+  async paymentOrder(userId: number, planId: string, amount: number): Promise<any> {
+    return (await this.request({action: "payment_order", user_id: userId, plan_id: planId, amount})).value;
+  }
+  async refundPrepare(adminId: number, userId: number, chargeId: string): Promise<{status: string; recalc_status: string}> {
+    return (await this.request({action: "refund_prepare", admin_id: adminId, user_id: userId, charge_id: chargeId})).value;
+  }
+  async refundBegin(adminId: number, userId: number, chargeId: string): Promise<{status: string; ready?: boolean; amount?: number; currency?: string}> {
+    return (await this.request({action: "refund_begin", admin_id: adminId, user_id: userId, charge_id: chargeId})).value;
+  }
+  async refundConfirm(userId: number, chargeId: string, amount: number, currency: string, orderId?: string): Promise<string> {
+    const value = (await this.request({action: "refund_confirm", user_id: userId, charge_id: chargeId, amount, currency, order_id: orderId})).value;
+    if (!["applied", "manual_review", "review"].includes(value)) throw new Error("Invalid refund confirmation");
+    return value;
+  }
+  async refundReject(adminId: number, userId: number, chargeId: string): Promise<boolean> {
+    return (await this.request({action: "refund_reject", admin_id: adminId, user_id: userId, charge_id: chargeId})).value === true;
+  }
+  async paymentValidate(userId: number, orderId: string, currency: string, amount: number): Promise<boolean> {
+    return (await this.request({action: "payment_validate", user_id: userId, order_id: orderId, currency, amount})).value === true;
+  }
+  async paymentApply(userId: number, orderId: string, currency: string, amount: number, chargeId: string): Promise<any> {
+    return (await this.request({action: "payment_apply", user_id: userId, order_id: orderId, currency, amount, charge_id: chargeId})).value;
+  }
+  async starObserve(transaction: object): Promise<void> { await this.request({action: "star_observe", transaction}); }
+  async starFinalize(): Promise<void> { await this.request({action: "star_finalize"}); }
   close(): Promise<void> {
     if (this.stopped) return Promise.resolve();
     const closed = new Promise<void>(resolve => this.process.once("close", () => resolve()));

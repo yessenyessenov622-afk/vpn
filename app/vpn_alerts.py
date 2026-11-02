@@ -4,8 +4,8 @@ import time
 from app import vpn_devices
 
 INTERVAL = 3600
-VALID_ACTIONS = {'check', 'revoke', 'restore', 'enable', 'scan'}
-VALID_CODES = {'controller_error', 'unconfirmed', 'conflict', 'scan_error'}
+VALID_ACTIONS = {'check', 'revoke', 'restore', 'enable', 'scan', 'payment', 'history'}
+VALID_CODES = {'controller_error', 'unconfirmed', 'conflict', 'scan_error', 'fulfillment_error', 'manual_review'}
 
 
 def report(db, user_id, action, code, now):
@@ -22,7 +22,7 @@ def report(db, user_id, action, code, now):
 
 def resolve(db, user_id, now):
     db.execute('''UPDATE vpn_alerts SET active=0, resolved_at=?, version=version+1
-                  WHERE user_id=? AND active=1''', (now, user_id))
+                  WHERE user_id=? AND active=1 AND action IN ('check','revoke','restore','enable','scan')''', (now, user_id))
 
 
 def due(*, path=None, now=None):

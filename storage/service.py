@@ -9,7 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from app import database, vpn_provision, vpn_alerts, vpn_devices
+from app import database, vpn_provision, vpn_alerts, vpn_devices, payments, star_history, refunds
 
 LANGUAGES = {"kk", "ru", "en", "tr", "uz", "ky", "de", "es"}
 
@@ -24,10 +24,39 @@ def execute(command, path=None):
     if command.get("action") == "alerts_ack":
         vpn_alerts.acknowledge(command.get("event"), path=path)
         return True
+    if command.get("action") == "star_observe":
+        return star_history.observe(command.get("transaction"), path=path)
+    if command.get("action") == "star_finalize":
+        star_history.finalize(path=path)
+        return True
     user_id = command.get("user_id")
     if type(user_id) is not int or not 0 < user_id <= (1 << 52):
         raise ValueError("Invalid user")
     action = command.get("action")
+    if action == "refund_prepare":
+        admin = os.environ.get('ADMIN_ID', '')
+        if not admin.isascii() or not admin.isdigit():
+            raise ValueError('invalid administrator configuration')
+        return refunds.prepare(command.get('admin_id'), int(admin), user_id, command.get('charge_id'), path=path)
+    if action == "refund_begin":
+        admin = os.environ.get('ADMIN_ID', '')
+        if not admin.isascii() or not admin.isdigit(): raise ValueError('invalid administrator configuration')
+        return refunds.begin_authorized(command.get('admin_id'), int(admin), user_id, command.get('charge_id'), path=path)
+    if action == "refund_confirm":
+        return refunds.confirm(command.get('charge_id'), user_id, command.get('amount'), command.get('currency'), order_id=command.get('order_id'), path=path)
+    if action == "refund_reject":
+        admin = os.environ.get('ADMIN_ID', '')
+        if not admin.isascii() or not admin.isdigit() or int(admin) != command.get('admin_id') or int(admin) <= 0:
+            raise ValueError('administrator required')
+        # Validate the owner again before changing the state.
+        refunds.prepare(command.get('admin_id'), int(admin), user_id, command.get('charge_id'), path=path)
+        return refunds.reject_attempt(command.get('charge_id'), path=path)
+    if action == "payment_order":
+        return payments.create_order(user_id, command.get("plan_id"), command.get("amount"), path=path)
+    if action == "payment_validate":
+        return payments.valid_order(user_id, command.get("order_id"), command.get("currency"), command.get("amount"), path=path)
+    if action == "payment_apply":
+        return payments.accept_payment(user_id, command.get("order_id"), command.get("currency"), command.get("amount"), command.get("charge_id"), path=path)
     if action == "get":
         language = database.get_language(user_id, path)
         return language if language in LANGUAGES else None
@@ -39,6 +68,8 @@ def execute(command, path=None):
         return True
     if action == "subscription":
         return database.get_subscription(user_id, path)
+    if action == "subscription_view":
+        return database.subscription_view(user_id, path)
     if action == "grant":
         return database.grant_subscription(user_id, command.get("days"), path)
     if action == "vpn_request":
@@ -66,6 +97,7 @@ def main():
             had_scan_error = False
             while True:
                 try:
+                    payments.retry_pending(path=database.DATABASE_PATH)
                     reconcile_all(controller, path=database.DATABASE_PATH)
                     if had_scan_error:
                         from contextlib import closing

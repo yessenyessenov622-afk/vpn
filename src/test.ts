@@ -4,7 +4,8 @@ import { initialLanguage, languageNames, translations } from "./translations";
 import { supportTranslations } from "./support-translations";
 import { createBot, LanguageStorage, parseAdminId } from "./handlers";
 import { Language } from "./translations";
-import { describeSubscription, subscriptionTranslations } from "./subscription-translations";
+import { describeSubscription, describeSubscriptionView, subscriptionTranslations } from "./subscription-translations";
+import { paymentTranslations } from "./payment-translations";
 import { Storage, Subscription } from "./storage";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmdirSync, unlinkSync } from "fs";
 import { tmpdir } from "os";
@@ -19,6 +20,7 @@ const supportKeys = Object.keys(supportTranslations.ru).sort().join(",");
 const subscriptionKeys = Object.keys(subscriptionTranslations.ru).sort().join(",");
 const planKeys = Object.keys(planTranslations.ru).sort().join(",");
 const vpnKeys = Object.keys(vpnTranslations.ru).sort().join(",");
+const paymentKeys = Object.keys(paymentTranslations.ru).sort().join(",");
 assert.equal(typeof Bot, "function");
 assert.equal(Object.keys(languageNames).length, 8);
 for (const code of Object.keys(languageNames) as (keyof typeof languageNames)[]) {
@@ -33,8 +35,20 @@ for (const code of Object.keys(languageNames) as (keyof typeof languageNames)[])
   for (const plan of plans) assert.ok(plan.names[code].trim());
   assert.equal(Object.keys(vpnTranslations[code]).sort().join(","), vpnKeys);
   for (const value of Object.values(vpnTranslations[code])) assert.ok(value.trim());
+  assert.equal(Object.keys(paymentTranslations[code]).sort().join(","), paymentKeys);
+  for (const value of Object.values(paymentTranslations[code])) assert.ok(value.trim());
+  for (const source of ["test", "paid", "mixed", "unknown"] as const) {
+    for (const vpn of ["none", "unknown", "allowed", "revoked"] as const) {
+      const screen = describeSubscriptionView({subscription: {started_at: 100, expires_at: 200}, source, vpn}, code, 150000);
+      assert.ok(screen.includes(subscriptionTranslations[code].active));
+      assert.ok(screen.includes(vpn === "none" ? paymentTranslations[code].vpnNone : vpn === "unknown" ? paymentTranslations[code].vpnUnknown : vpn === "allowed" ? paymentTranslations[code].vpnAllowed : paymentTranslations[code].vpnRevoked));
+      assert.ok(screen.includes(source === "test" ? subscriptionTranslations[code].title : source === "paid" ? paymentTranslations[code].paid : source === "mixed" ? paymentTranslations[code].mixed : paymentTranslations[code].unknownSource));
+    }
+  }
+  assert.ok(describeSubscriptionView({subscription: null, source: "unknown", vpn: "none"}, code).includes(paymentTranslations[code].vpnNone));
+  assert.ok(describeSubscriptionView({subscription: {started_at: 100, expires_at: 200}, source: "paid", vpn: "unknown"}, code, 200000).includes(subscriptionTranslations[code].expired));
 }
-assert.deepEqual(plans.map(plan => plan.days), [30, 90, 180]);
+assert.deepEqual(plans.map(plan => plan.days), [7, 18, 30]);
 assert.equal(new Set(plans.map(plan => plan.id)).size, 3);
 assert.equal(initialLanguage("kk-KZ"), "kk");
 assert.equal(initialLanguage("xx"), "ru");
@@ -75,6 +89,12 @@ async function testHandlers(): Promise<void> {
     }
   };
   const admin = 900, one = 101, two = 202;
+  let paymentValid = true, applied = 0;
+  storage.paymentValidate = async (id, order, currency, amount) => paymentValid && id === one && order === "order" && currency === "XTR" && amount === 25;
+  storage.paymentApply = async (id, order, currency, amount, charge) => {
+    if (id !== one || order !== "order" || currency !== "XTR" || amount !== 25 || charge !== "charge") throw new Error("invalid");
+    applied++; return {status: "paid"};
+  };
   const bot = createBot("123456:example", storage, admin);
   bot.botInfo = { id: 123456, is_bot: true, first_name: "Test", username: "test_bot", can_join_groups: true, can_read_all_group_messages: false, supports_inline_queries: false, can_connect_to_business: false, has_main_web_app: false };
   const calls: Array<{ method: string; payload: any }> = [];
@@ -85,6 +105,7 @@ async function testHandlers(): Promise<void> {
     if (method === "sendMessage" && (payload as any).chat_id === failRecipient) throw new Error("Simulated delivery failure");
     if (method === "sendMessage") return { ok: true, result: { message_id: calls.length } } as any;
     if (method === "answerCallbackQuery") return { ok: true, result: true } as any;
+    if (method === "answerPreCheckoutQuery") return { ok: true, result: true } as any;
     throw new Error("Unexpected API call");
   });
   let updateId = 0;
@@ -97,6 +118,56 @@ async function testHandlers(): Promise<void> {
   }
   const sent = () => calls.filter(call => call.method === "sendMessage");
   const last = () => sent()[sent().length - 1].payload;
+
+  let refundCalls = 0;
+  storage.refundPrepare = async (actor, user, charge) => {
+    refundCalls++;
+    assert.equal(actor, admin); assert.equal(user, one); assert.equal(charge, "charge");
+    return {status: "prepared", recalc_status: "pending"};
+  };
+  await message(one, "/refund_prepare 101 charge");
+  assert.equal(refundCalls, 0);
+  await message(admin, "/refund_prepare 101 charge");
+  assert.equal(refundCalls, 1);
+  assert.ok(last().text.includes("Реальные возвраты отключены"));
+  await message(admin, "/refund_execute 101 charge");
+  assert.ok(last().text.includes("принудительно отключены"));
+  assert.equal(calls.filter(call => call.method === "refundStarPayment").length, 0);
+
+  storage.subscriptionView = async id => ({subscription: subscriptions.get(id) || null, source: "unknown", vpn: "none"});
+  for (const [index, language] of (Object.keys(languageNames) as Language[]).entries()) {
+    const user = 1000 + index;
+    languages.set(user, language);
+    await message(user, "/paysupport");
+    assert.equal(last().text, paymentTranslations[language].support);
+    await message(user, "/buy days7");
+    assert.equal(last().text, paymentTranslations[language].unavailable);
+    await message(user, subscriptionTranslations[language].button);
+    assert.ok(last().text.includes(paymentTranslations[language].vpnNone));
+    subscriptions.set(user, {started_at: 1, expires_at: 2});
+    storage.subscriptionView = async id => ({subscription: subscriptions.get(id) || null, source: "paid", vpn: "unknown"});
+    await message(user, subscriptionTranslations[language].button);
+    assert.ok(last().text.includes(paymentTranslations[language].paid));
+    assert.ok(last().text.includes(paymentTranslations[language].vpnUnknown));
+    assert.ok(last().text.includes(subscriptionTranslations[language].expired));
+    subscriptions.delete(user);
+    storage.subscriptionView = async id => ({subscription: subscriptions.get(id) || null, source: "unknown", vpn: "none"});
+  }
+  storage.subscriptionView = undefined;
+
+  await message(one, "/buy days7");
+  assert.equal(last().text, paymentTranslations.ru.unavailable);
+  assert.equal(calls.filter(call => call.method === "sendInvoice").length, 0);
+  await bot.handleUpdate({update_id: ++updateId, pre_checkout_query: {id: "checkout", from: {id: one, is_bot: false, first_name: "Test"}, currency: "XTR", total_amount: 25, invoice_payload: "order"}} as any);
+  assert.equal(calls[calls.length - 1].method, "answerPreCheckoutQuery");
+  assert.equal(calls[calls.length - 1].payload.ok, true);
+  assert.equal(applied, 0);
+  paymentValid = false;
+  await bot.handleUpdate({update_id: ++updateId, pre_checkout_query: {id: "checkout2", from: {id: one, is_bot: false, first_name: "Test"}, currency: "XTR", total_amount: 25, invoice_payload: "order"}} as any);
+  assert.equal(calls[calls.length - 1].payload.ok, false);
+  paymentValid = true;
+  await bot.handleUpdate({update_id: ++updateId, message: {message_id: updateId, date: 1700000000, chat: {id: one, type: "private"}, from: {id: one, is_bot: false, first_name: "Test"}, successful_payment: {currency: "XTR", total_amount: 25, invoice_payload: "order", telegram_payment_charge_id: "charge", provider_payment_charge_id: ""}}} as any);
+  assert.equal(applied, 1);
 
   await message(admin, "/test_alert");
   assert.equal(last().chat_id, admin);
@@ -167,7 +238,7 @@ async function testHandlers(): Promise<void> {
   assert.equal(subscriptions.size, 0);
   assert.equal(grants, 0);
   await message(one, subscriptionTranslations.en.button);
-  assert.equal(last().text, subscriptionTranslations.en.none);
+  assert.ok(last().text.includes(subscriptionTranslations.en.none));
   await message(one, `/grant_test ${one} 7`);
   assert.equal(last().text, subscriptionTranslations.en.forbidden);
   assert.equal(grants, 0);
@@ -184,7 +255,7 @@ async function testHandlers(): Promise<void> {
   await message(admin, `/grant_test ${one} 2`);
   assert.equal(subscriptions.get(one)!.expires_at, firstEnd + 2 * 86400);
   await message(one, subscriptionTranslations.en.button);
-  assert.ok(last().text.includes("Test subscription"));
+  assert.ok(last().text.includes(paymentTranslations.en.unknownSource));
   assert.ok(last().text.includes("Active"));
   assert.ok(last().text.includes("UTC"));
   failGrant = true;
@@ -276,7 +347,7 @@ async function testHandlers(): Promise<void> {
 
 async function testPythonBridge(): Promise<void> {
   const temp = mkdtempSync(join(tmpdir(), "vpn-bot-test-"));
-  const files = ["app/__init__.py", "app/database.py", "app/vpn_devices.py", "app/vpn_policy.py", "app/vpn_provision.py", "app/vpn_alerts.py", "storage/service.py"];
+  const files = ["app/__init__.py", "app/database.py", "app/vpn_devices.py", "app/vpn_policy.py", "app/vpn_provision.py", "app/vpn_alerts.py", "app/payments.py", "app/refunds.py", "app/star_history.py", "storage/service.py"];
   mkdirSync(join(temp, "app"));
   mkdirSync(join(temp, "storage"));
   for (const file of files) copyFileSync(file, join(temp, file));
@@ -292,6 +363,15 @@ async function testPythonBridge(): Promise<void> {
     await storage.close();
     storage = new Storage(temp);
     assert.equal(await storage.get(123), "kk");
+    assert.deepEqual(await storage.subscription(123), granted);
+    const order = await storage.paymentOrder(123, "days7", 25);
+    await storage.paymentApply(123, order.order_id, "XTR", 25, "refund-test-charge");
+    const {processBatch} = await import("./payment-polling");
+    const update = {update_id: 1, message: {chat: {id:123, type:"private"}, refunded_payment: {currency:"XTR", total_amount:25, invoice_payload:order.order_id, telegram_payment_charge_id:"refund-test-charge"}}};
+    const confirm = (id: number, charge: string, amount: number, currency: string, payload: string) => storage!.refundConfirm(id,charge,amount,currency,payload);
+    assert.equal(await processBatch([update], 0, {} as any, async () => {}, confirm), 2);
+    await storage.close(); storage = new Storage(temp);
+    assert.equal(await processBatch([update], 0, {} as any, async () => {}, confirm), 2);
     assert.deepEqual(await storage.subscription(123), granted);
     console.log("TypeScript + Python + временная SQLite после перезапуска: OK");
   } finally {
@@ -329,7 +409,7 @@ async function testAlertDelivery(): Promise<void> {
 async function testAlertQueueIntegration(): Promise<void> {
   const { AlertDispatcher, formatTestQueueMessage } = await import("./alerts");
   const temp = mkdtempSync(join(tmpdir(), "vpn-alert-test-"));
-  const files = ["app/__init__.py", "app/database.py", "app/vpn_devices.py", "app/vpn_policy.py", "app/vpn_provision.py", "app/vpn_alerts.py", "app/vpn_reconcile.py", "storage/service.py"];
+  const files = ["app/__init__.py", "app/database.py", "app/vpn_devices.py", "app/vpn_policy.py", "app/vpn_provision.py", "app/vpn_alerts.py", "app/vpn_reconcile.py", "app/payments.py", "app/refunds.py", "app/star_history.py", "storage/service.py"];
   mkdirSync(join(temp, "app")); mkdirSync(join(temp, "storage"));
   for (const file of files) copyFileSync(file, join(temp, file));
   const setup = `import base64,sqlite3,time\nfrom app import database,vpn_reconcile\np='users.sqlite3'; now=int(time.time()); database.initialize(p); database.register_user(101,p)\nk=base64.b64encode(bytes([1])*32).decode()\nwith sqlite3.connect(p) as c:\n c.execute("INSERT INTO test_subscriptions VALUES(101,?,?)",(now-100,now-1))\n c.execute("INSERT INTO vpn_devices(user_id,public_key,created_at,updated_at,access_state,vpn_ip,server_id) VALUES(101,?,?,?,'allowed','10.77.0.3/32','primary')",(k,now,now))\nclass C:\n def is_owned(self,k,a): return True\n def list_peers(self): raise TimeoutError()\nassert vpn_reconcile.reconcile_one(101,C(),path=p)=='error'`;
@@ -358,5 +438,138 @@ async function testAlertQueueIntegration(): Promise<void> {
   }
 }
 
-async function main(): Promise<void> { await testHandlers(); await testPythonBridge(); await testAlertDelivery(); await testAlertQueueIntegration(); }
+async function testPaymentJournal(): Promise<void> {
+  const { PaymentJournal } = await import("./payment-journal");
+  const { processBatch, replayJournal } = await import("./payment-polling");
+  const parent = mkdtempSync(join(tmpdir(), "vpn-journal-"));
+  const dir = join(parent, "journal");
+  const journal = new PaymentJournal(dir);
+  const update = {update_id: 17, message: {from: {id: 101}, successful_payment: {invoice_payload: "order", currency: "XTR", total_amount: 25, telegram_payment_charge_id: "charge"}}};
+  let handled = 0;
+  try {
+    if (process.platform === "win32") assert.throws(() => new PaymentJournal(parent).record({userId: 101, orderId: "order", currency: "XTR", amount: 25, chargeId: "unsafe"}));
+    assert.equal(await processBatch([update], 0, journal, async () => { handled++; }), 18);
+    await processBatch([update], 0, journal, async () => { handled++; });
+    assert.equal(journal.pending().length, 1);
+    const {readdirSync, chmodSync} = await import("fs");
+    const protectedFile = join(dir, readdirSync(dir)[0]);
+    if (process.platform === "win32") {
+      assert.equal(spawnSync("icacls", [protectedFile, "/grant", "*S-1-1-0:(R)"], {stdio:"ignore"}).status, 0);
+      assert.throws(() => journal.pending());
+      assert.equal(spawnSync("icacls", [protectedFile, "/remove", "*S-1-1-0"], {stdio:"ignore"}).status, 0);
+    } else {
+      chmodSync(protectedFile, 0o644); assert.throws(() => journal.pending()); chmodSync(protectedFile, 0o600);
+    }
+    const restarted = new PaymentJournal(dir);
+    await assert.rejects(replayJournal(restarted, async () => { throw new Error("db unavailable"); }));
+    assert.equal(restarted.pending().length, 1);
+    await replayJournal(restarted, async () => ({status: "pending"}));
+    assert.equal(restarted.pending().length, 0);
+    const invalid = new PaymentJournal(join(dir, "missing", "cannot", "write"));
+    const blocked = { record: () => { throw new Error("journal unavailable"); } } as unknown as InstanceType<typeof PaymentJournal>;
+    await assert.rejects(processBatch([update], 0, blocked, async () => { handled++; }));
+    assert.equal(handled, 2);
+    assert.equal(invalid.pending().length, 0);
+    console.log("Журнал платежей: повтор, перезапуск и отказ хранилища OK");
+  } finally {
+    for (const receipt of journal.pending()) journal.remove(receipt);
+    rmdirSync(dir);
+    rmdirSync(parent);
+  }
+}
+
+async function testStarHistoryPages(): Promise<void> {
+  const { reconcileStarHistory } = await import("./star-history");
+  const item = (id: string) => ({id, amount: 25, date: 1000, source: {type: "user", transaction_type: "invoice_payment", user: {id: 101}, invoice_payload: "order"}});
+  const items = [item("a"), item("b"), item("c")];
+  const seen = new Map<string, any>(); let finalized = 0, inserted = false;
+  const store = {starObserve: async (entry: any) => {seen.set(entry.direction + entry.id, entry);}, starFinalize: async () => {finalized++;}};
+  await reconcileStarHistory(async (offset, limit) => {
+    if (offset === 2 && !inserted) {items.unshift(item("new")); inserted = true;}
+    return {transactions: items.slice(offset, offset + limit)};
+  }, store, 2);
+  assert.equal(finalized, 1); assert.deepEqual([...seen.keys()].sort(), ["incominga","incomingb","incomingc","incomingnew"]);
+  let fail = true;
+  await assert.rejects(reconcileStarHistory(async (offset, limit) => {if (offset > 0 && fail) throw new Error("offline"); return {transactions: items.slice(offset, offset + limit)};}, store, 2));
+  assert.equal(finalized, 1); fail = false;
+  await reconcileStarHistory(async (offset, limit) => ({transactions: items.slice(offset, offset + limit)}), store, 2);
+  assert.equal(finalized, 2);
+  const outgoing = {id: "ref", amount: 25, date: 1001, receiver: {type: "user", transaction_type: "invoice_payment", user: {id: 101}}};
+  const invalidOutgoing = {id: "other", amount: 25, date: 1001, receiver: {type: "other", user: {id: 101}}};
+  await reconcileStarHistory(async (offset, limit) => ({transactions: [outgoing, invalidOutgoing].slice(offset, offset + limit)}), store, 2);
+  assert.ok(seen.has("outgoingref")); assert.ok(seen.has("unknownother"));
+  await assert.rejects(reconcileStarHistory(async () => ({transactions: [item("x")]}), {starObserve: async () => {throw new Error("database unavailable");}, starFinalize: async () => {throw new Error("must not run");}}, 2));
+  console.log("История Stars: страницы, перекрытие и восстановление после ошибки OK");
+}
+
+async function testJournalProcessCrash(): Promise<void> {
+  const { PaymentJournal } = await import("./payment-journal");
+  const { replayJournal } = await import("./payment-polling");
+  const dir = mkdtempSync(join(tmpdir(), "vpn-journal-crash-"));
+  const files = ["app/__init__.py", "app/database.py", "app/vpn_devices.py", "app/vpn_policy.py", "app/vpn_provision.py", "app/vpn_alerts.py", "app/payments.py", "app/refunds.py", "app/star_history.py", "storage/service.py"];
+  mkdirSync(join(dir,"app")); mkdirSync(join(dir,"storage"));
+  for (const file of files) copyFileSync(file,join(dir,file));
+  const setup = spawnSync("python", ["-c", "from app import database,payments\ndatabase.initialize(); database.register_user(101); print(payments.create_order(101,'days7',25)['order_id'])"], {cwd:dir,encoding:"utf8",env:{...process.env,PYTHONDONTWRITEBYTECODE:"1"}});
+  assert.equal(setup.status,0);
+  const receipt = {userId: 101, orderId: setup.stdout.trim(), currency: "XTR", amount: 25, chargeId: "charge"};
+  const journalDir = join(dir,"journal");
+  const code = `const {PaymentJournal}=require(${JSON.stringify(join(process.cwd(), "dist", "payment-journal.js"))}); new PaymentJournal(process.argv[1]).record(${JSON.stringify(receipt)}); process.kill(process.pid, "SIGKILL");`;
+  const child = spawnSync(process.execPath, ["-e", code, journalDir]);
+  let storage: Storage | undefined;
+  try {
+    assert.equal(child.error, undefined);
+    assert.ok((child.status !== null && child.status !== 0) || child.signal === "SIGKILL");
+    const reopened = new PaymentJournal(journalDir);
+    assert.deepEqual(reopened.pending(), [receipt]);
+    if (process.platform !== "win32") {
+      const { statSync, readdirSync } = await import("fs");
+      assert.equal(statSync(join(journalDir,readdirSync(journalDir)[0])).mode & 0o077, 0);
+    } else {
+      const { readdirSync } = await import("fs");
+      const acl = spawnSync("icacls", [join(journalDir,readdirSync(journalDir)[0]), "/verify"], {stdio:"ignore"});
+      assert.equal(acl.status, 0); // Verifies ACL structure, not privacy of inherited permissions.
+    }
+    storage = new Storage(dir);
+    await replayJournal(reopened, r => storage!.paymentApply(r.userId,r.orderId,r.currency,r.amount,r.chargeId));
+    assert.equal(reopened.pending().length,0);
+    assert.ok(await storage.subscription(101));
+    console.log("Аварийный выход процесса и восстановление в SQLite: OK");
+  } finally {
+    if (storage) await storage.close();
+    for (const file of [...files,"users.sqlite3"]) {const target=join(dir,file); if(existsSync(target)) unlinkSync(target);}
+    rmdirSync(journalDir); rmdirSync(join(dir,"app")); rmdirSync(join(dir,"storage")); rmdirSync(dir);
+  }
+}
+
+async function testRefundFlow(): Promise<void> {
+  const {executeRefund} = await import("./refund-flow");
+  const {processBatch} = await import("./payment-polling");
+  let state = "prepared", calls = 0, failBegin = false, failConfirm = false;
+  const store = {
+    refundBegin: async () => { if (failBegin) throw new Error("db unavailable"); if (state !== "prepared") return {status: state}; state = "uncertain"; return {status: state, ready: true, amount: 25, currency: "XTR"}; },
+    refundConfirm: async () => { if (failConfirm) throw new Error("db unavailable"); state = "confirmed"; return "applied"; },
+    refundReject: async () => { state = "rejected"; return true; }
+  };
+  const send = async () => { calls++; return true; };
+  failBegin = true; await assert.rejects(executeRefund(store, 9, 1, "charge", send)); assert.equal(calls, 0);
+  failBegin = false; failConfirm = true;
+  assert.equal(await executeRefund(store, 9, 1, "charge", send), "uncertain"); assert.equal(calls, 1);
+  failConfirm = false;
+  assert.equal(await executeRefund(store, 9, 1, "charge", send), "uncertain"); assert.equal(calls, 1);
+  state = "prepared"; assert.equal(await executeRefund(store, 9, 1, "charge", async () => false), "rejected");
+  state = "prepared"; assert.equal(await executeRefund(store, 9, 1, "charge", async () => {throw new Error("lost response");}), "uncertain");
+  state = "prepared"; assert.equal(await executeRefund(store, 9, 1, "charge", send), "applied");
+  const update = {update_id: 77, message: {chat: {id: 1, type: "private"}, refunded_payment: {currency: "XTR", total_amount: 25, invoice_payload: "order", telegram_payment_charge_id: "charge"}}};
+  const journal = {record: () => {}} as any;
+  let handled = 0, persisted = 0;
+  await assert.rejects(processBatch([update], 0, journal, async () => {handled++;}, async () => {throw new Error("db down");}));
+  assert.equal(handled, 0);
+  const confirm = async (user: number, charge: string, amount: number, currency: string, order: string) => {assert.deepEqual([user,charge,amount,currency,order],[1,"charge",25,"XTR","order"]); persisted++; return "applied";};
+  assert.equal(await processBatch([update], 0, journal, async () => {handled++;}, confirm), 78);
+  assert.equal(await processBatch([update], 0, journal, async () => {handled++;}, confirm), 78);
+  assert.equal(persisted, 2);
+  await assert.rejects(processBatch([update], 0, journal, async () => {handled++;}));
+}
+
+async function main(): Promise<void> { await testHandlers(); await testPythonBridge(); await testAlertDelivery(); await testAlertQueueIntegration(); await testPaymentJournal(); await testStarHistoryPages(); await testJournalProcessCrash(); await testRefundFlow(); }
 main().catch(error => { console.error(error); process.exitCode = 1; });

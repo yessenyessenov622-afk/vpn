@@ -2,9 +2,9 @@ import { VPNAlert } from "./storage";
 
 type AlertStorage = { alertsDue(): Promise<VPNAlert[]>; alertsAck(event: VPNAlert): Promise<void> };
 type Send = (text: string) => Promise<unknown>;
-const actions: Record<string, string> = {check: "проверка устройства", revoke: "отзыв доступа", restore: "восстановление доступа", enable: "выдача доступа", scan: "фоновая проверка"};
-const codes = new Set(["controller_error", "unconfirmed", "conflict", "scan_error"]);
-const reasons: Record<string, string> = {controller_error: "Контроллер недоступен или отклонил запрос", unconfirmed: "Сервер не подтвердил операцию", conflict: "Обнаружен конфликт ключа или адреса", scan_error: "Фоновая проверка завершилась с ошибкой"};
+const actions: Record<string, string> = {check: "проверка устройства", revoke: "отзыв доступа", restore: "восстановление доступа", enable: "выдача доступа", scan: "фоновая проверка", payment: "обработка платежа", history: "сверка истории платежей"};
+const codes = new Set(["controller_error", "unconfirmed", "conflict", "scan_error", "fulfillment_error", "manual_review"]);
+const reasons: Record<string, string> = {controller_error: "Контроллер недоступен или отклонил запрос", unconfirmed: "Сервер не подтвердил операцию", conflict: "Обнаружен конфликт ключа или адреса", scan_error: "Фоновая проверка завершилась с ошибкой", fulfillment_error: "Платёж ожидает обработки", manual_review: "Операция требует проверки администратором"};
 
 export function formatTestQueueMessage(text: string): string {
   return `🧪 ТЕСТ ОЧЕРЕДИ — реальной ошибки VPN нет.\n\n${text}`;

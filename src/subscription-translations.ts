@@ -1,5 +1,7 @@
 import { Language } from "./translations";
 import { Subscription } from "./storage";
+import { SubscriptionView } from "./storage";
+import { paymentTranslations } from "./payment-translations";
 
 type Texts = { button: string; none: string; title: string; active: string; expired: string; start: string; end: string; remaining: string; days: string; hours: string; minutes: string; seconds: string; notice: string; forbidden: string };
 export const subscriptionTranslations: Record<Language, Texts> = {
@@ -25,5 +27,13 @@ export function describeSubscription(value: Subscription | null, language: Langu
   const hours = Math.floor(remaining % 86400 / 3600);
   const minutes = Math.floor(remaining % 3600 / 60);
   const seconds = remaining % 60;
-  return `${t.title}\n${remaining > 0 ? t.active : t.expired}\n${t.start}: ${utcDate(value.started_at)}\n${t.end}: ${utcDate(value.expires_at)}\n${t.remaining}: ${days} ${t.days} ${hours} ${t.hours} ${minutes} ${t.minutes} ${seconds} ${t.seconds}\n\n${t.notice}`;
+  return `${t.title}\n${remaining > 0 ? t.active : t.expired}\n${t.start}: ${utcDate(value.started_at)}\n${t.end}: ${utcDate(value.expires_at)}\n${t.remaining}: ${days} ${t.days} ${hours} ${t.hours} ${minutes} ${t.minutes} ${seconds} ${t.seconds}`;
+}
+
+export function describeSubscriptionView(view: SubscriptionView, language: Language, nowMs = Date.now()): string {
+  const t = subscriptionTranslations[language], p = paymentTranslations[language];
+  const title = view.source === "test" ? t.title : view.source === "paid" ? p.paid : view.source === "mixed" ? p.mixed : p.unknownSource;
+  const subscription = view.subscription ? describeSubscription(view.subscription, language, nowMs).replace(t.title, title) : t.none;
+  const vpn = view.vpn === "none" ? p.vpnNone : view.vpn === "allowed" ? p.vpnAllowed : view.vpn === "revoked" ? p.vpnRevoked : p.vpnUnknown;
+  return `${subscription}\n\n${vpn}`;
 }
