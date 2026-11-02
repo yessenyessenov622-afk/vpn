@@ -14,9 +14,10 @@ export class Storage {
   private pending: Pending[] = [];
   private stopped = false;
 
-  constructor(cwd = process.cwd()) {
-    const env: NodeJS.ProcessEnv = { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONDONTWRITEBYTECODE: "1" };
+  constructor(cwd = process.cwd(), overrides: NodeJS.ProcessEnv = {}) {
+    const env: NodeJS.ProcessEnv = { ...process.env, ...overrides, PYTHONIOENCODING: "utf-8", PYTHONDONTWRITEBYTECODE: "1" };
     delete env.BOT_TOKEN;
+    delete env.TEST_BOT_TOKEN;
     this.process = spawn("python", ["-u", "storage/service.py"], { env, cwd });
     this.process.stderr.on("data", data => { if (String(data).includes("VPN_RECONCILE_SCAN_ERROR")) console.error("VPN_RECONCILE_SCAN_ERROR"); });
     this.process.on("error", () => this.fail());

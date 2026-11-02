@@ -36,8 +36,8 @@ export function parseAdminId(value: string | undefined): number | null {
   return Number.isSafeInteger(id) && id <= 2 ** 52 ? id : null;
 }
 
-export function createBot(token: string, storage: LanguageStorage, adminId: number): Bot {
-  const bot = new Bot(token);
+export function createBot(token: string, storage: LanguageStorage, adminId: number, test?: {invoices: boolean; refunds: boolean}): Bot {
+  const bot = new Bot(token, test ? {client: {environment: "test"}} : undefined);
   const states = new Map<number, State>();
   function menu(language: Language): Keyboard {
     return new Keyboard().text(translations[language].menu).text(supportTranslations[language].button).row().text(subscriptionTranslations[language].button).text(planTranslations[language].button).row().text(vpnTranslations[language].button).resized();
@@ -103,6 +103,7 @@ export function createBot(token: string, storage: LanguageStorage, adminId: numb
     await ctx.reply(translations[language].help, { reply_markup: menu(language) });
   });
   bot.command("language", async ctx => { states.delete(ctx.from!.id); await showChoices(ctx); });
+  if (test) bot.command("test_id", async ctx => { await ctx.reply(`TEST: ваш ID в тестовой среде: ${ctx.from!.id}`); });
   bot.command("paysupport", async ctx => {
     const language = await currentLanguage(ctx);
     await ctx.reply(paymentTranslations[language].support, {reply_markup: menu(language)});
@@ -125,7 +126,7 @@ export function createBot(token: string, storage: LanguageStorage, adminId: numb
     if (ctx.from!.id !== adminId || ctx.chat?.type !== 'private' || ctx.chat.id !== adminId) return;
     // Hard-coded safety gate: environment variables cannot enable real refunds.
     const realRefundsEnabled: boolean = false;
-    if (!realRefundsEnabled) { await ctx.reply('Реальные возвраты принудительно отключены.'); return; }
+    if (!realRefundsEnabled && !test?.refunds) { await ctx.reply('Реальные возвраты принудительно отключены.'); return; }
     const parts = ctx.match.trim().split(/\s+/), user = Number(parts[0]);
     if (parts.length !== 2 || !/^[1-9]\d*$/.test(parts[0]) || !Number.isSafeInteger(user) || user > 2**52 || !parts[1] || parts[1].length > 255 || !storage.refundBegin || !storage.refundConfirm || !storage.refundReject) {
       await ctx.reply('Формат: /refund_execute ID_пользователя ID_платежа.'); return;
@@ -138,16 +139,16 @@ export function createBot(token: string, storage: LanguageStorage, adminId: numb
   bot.command("buy", async ctx => {
     const language = await currentLanguage(ctx);
     const plan = paymentPlans.find(p => p.id === ctx.match.trim());
-    const price = plan ? starsPrice(process.env[plan.priceEnv]) : null;
+    const price = plan ? (test?.invoices ? 1 : starsPrice(process.env[plan.priceEnv])) : null;
     // This stage is local preparation only; a deliberate code change is required before real invoices.
     const salesReady = false;
-    if (!plan || !salesReady || process.env.STARS_PAYMENTS_ENABLED !== "1" || price === null || !storage.paymentOrder) {
+    if (!plan || (!(salesReady && process.env.STARS_PAYMENTS_ENABLED === "1") && !test?.invoices) || price === null || !storage.paymentOrder) {
       await ctx.reply(paymentTranslations[language].unavailable); return;
     }
     try {
       const order = await storage.paymentOrder(ctx.from!.id, plan.id, price);
       const label = `${plan.days} ${planTranslations[language].days}`;
-      await ctx.replyWithInvoice(label, `${paymentTranslations[language].paid}: ${label}`, order.order_id, "XTR", [{label, amount: price}]);
+      await ctx.replyWithInvoice(test ? `TEST: ${label}` : label, test ? `TEST ONLY — ${label}; no VPN service` : `${paymentTranslations[language].paid}: ${label}`, order.order_id, "XTR", [{label, amount: price}]);
     } catch (_) { await ctx.reply(paymentTranslations[language].invoiceError); }
   });
   bot.on("message:successful_payment", async ctx => {
@@ -319,6 +320,7 @@ export function createBot(token: string, storage: LanguageStorage, adminId: numb
     if (Object.values(translations).some(item => item.menu === text)) { await showChoices(ctx); return; }
     if (Object.values(vpnTranslations).some(item => item.button === text)) {
       const vpn = vpnTranslations[language];
+      if (test) { await ctx.reply(vpn.unavailable, {reply_markup: menu(language)}); return; }
       const subscription = await storage.subscription(userId);
       if (!subscription || subscription.expires_at * 1000 <= Date.now()) { await ctx.reply(vpn.inactive, {reply_markup: menu(language)}); return; }
       states.set(userId, {kind: "vpn"});

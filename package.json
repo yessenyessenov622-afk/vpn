@@ -5,6 +5,7 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/bot.js",
+    "start:stars-test": "node dist/stars-test.js",
     "test": "npm run build && node dist/test.js"
   },
   "dependencies": {

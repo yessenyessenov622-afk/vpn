@@ -1,10 +1,12 @@
 import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -47,7 +49,16 @@ def get_settings(x_telegram_init_data: str = Header(default="")):
     language = database.get_language(user["id"])
     telegram_language = user.get("language_code", "")
     telegram_language = telegram_language.lower().split("-")[0] if isinstance(telegram_language, str) else ""
-    return {"language": language if language in LANGUAGES else telegram_language if telegram_language in LANGUAGES else "ru"}
+    return JSONResponse({"language": language if language in LANGUAGES else telegram_language if telegram_language in LANGUAGES else "ru"}, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/account")
+def get_account(x_telegram_init_data: str = Header(default="")):
+    user = authenticated_user(x_telegram_init_data)
+    view = database.subscription_view(user["id"])
+    return JSONResponse({"subscription": view["subscription"], "source": view["source"],
+                         "vpn": view["vpn"], "server_time": int(time.time())},
+                        headers={"Cache-Control": "no-store"})
 
 
 class Settings(BaseModel):
@@ -60,4 +71,4 @@ def put_settings(settings: Settings, x_telegram_init_data: str = Header(default=
     if settings.language not in LANGUAGES:
         raise HTTPException(status_code=400, detail="Unsupported language")
     database.save_language(user["id"], settings.language)
-    return {"language": settings.language}
+    return JSONResponse({"language": settings.language}, headers={"Cache-Control": "no-store"})

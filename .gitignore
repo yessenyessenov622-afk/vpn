@@ -22,3 +22,5 @@ java/build/
 github-export/
 .env.*
 !.env.example
+.stars-test/
+stars-test.env

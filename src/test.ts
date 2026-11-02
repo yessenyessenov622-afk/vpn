@@ -14,12 +14,23 @@ import { spawnSync } from "child_process";
 import { plans } from "./plans";
 import { planTranslations } from "./plan-translations";
 import { vpnTranslations } from "./vpn-translations";
+import { readFileSync } from "fs";
+import { runInNewContext } from "vm";
 
 const keys = Object.keys(translations.ru).sort().join(",");
 const supportKeys = Object.keys(supportTranslations.ru).sort().join(",");
 const subscriptionKeys = Object.keys(subscriptionTranslations.ru).sort().join(",");
 const planKeys = Object.keys(planTranslations.ru).sort().join(",");
 const vpnKeys = Object.keys(vpnTranslations.ru).sort().join(",");
+const preview = runInNewContext(readFileSync("static/translations.js", "utf8") + "; ({translations, translationKeys, translationRows, accountLabels})") as {translations: Record<string, Record<string,string>>; translationKeys: string[]; translationRows: Record<string,string>; accountLabels: Record<string,Record<string,string>>};
+assert.equal(Object.keys(preview.translations).length, 8);
+for (const code of Object.keys(preview.translations)) {
+  assert.equal(preview.translationRows[code].split("|").length, preview.translationKeys.length);
+  for (const key of preview.translationKeys) assert.ok(preview.translations[code][key]);
+  assert.deepEqual(Object.keys(preview.accountLabels[code]).sort(), Object.keys(preview.accountLabels.ru).sort());
+  for (const value of Object.values(preview.accountLabels[code])) assert.ok(value);
+}
+for (const match of readFileSync("static/index.html", "utf8").matchAll(/data-i18n(?:-aria)?="([^"]+)"/g)) assert.ok(preview.translationKeys.includes(match[1]));
 const paymentKeys = Object.keys(paymentTranslations.ru).sort().join(",");
 assert.equal(typeof Bot, "function");
 assert.equal(Object.keys(languageNames).length, 8);
@@ -571,5 +582,79 @@ async function testRefundFlow(): Promise<void> {
   await assert.rejects(processBatch([update], 0, journal, async () => {handled++;}));
 }
 
-async function main(): Promise<void> { await testHandlers(); await testPythonBridge(); await testAlertDelivery(); await testAlertQueueIntegration(); await testPaymentJournal(); await testStarHistoryPages(); await testJournalProcessCrash(); await testRefundFlow(); }
+async function testStarsIsolation(): Promise<void> {
+  const {validateTestConfig, prepareSandbox, validateSettingsFile} = await import("./stars-isolation");
+  const prod = "123456:" + "a".repeat(35), token = "654321:" + "b".repeat(35);
+  const config = {TEST_ENVIRONMENT:"telegram-test", TEST_BOT_TOKEN:token, TEST_ADMIN_ID:"9", TEST_INVOICES:"1", TEST_REFUNDS:"0"};
+  assert.equal(validateTestConfig(config,prod).invoices,true);
+  assert.throws(() => validateTestConfig({...config, TEST_BOT_TOKEN:prod},prod));
+  assert.throws(() => validateTestConfig({...config, TEST_BOT_TOKEN:"123456:" + "b".repeat(35)},prod));
+  assert.throws(() => validateTestConfig(config,undefined));
+  assert.throws(() => validateTestConfig({...config,TEST_ENVIRONMENT:"production"},prod));
+  assert.throws(() => validateTestConfig({...config,TEST_REFUNDS:"yes"},prod));
+  let vpnCalls = 0;
+  const fake: LanguageStorage = {
+    get: async () => "ru", set: async () => {}, register: async () => {},
+    subscription: async () => ({started_at:1,expires_at:253402300000}), grant: async () => null,
+    vpnRequest: async () => { vpnCalls++; return {status:"unavailable"}; },
+    paymentOrder: async (_id, plan, amount) => {assert.equal(amount,1); return {order_id:plan};}
+  };
+  const bot = createBot(token, fake, 9, {invoices:true,refunds:false});
+  assert.equal((bot.api as any).options.environment,"test");
+  bot.botInfo = {id:654321,is_bot:true,first_name:"Test",username:"test_bot",can_join_groups:true,can_read_all_group_messages:false,supports_inline_queries:false,can_connect_to_business:false,has_main_web_app:false};
+  const calls: Array<{method:string; payload:any}> = [];
+  bot.api.config.use(async (_prev,method,payload) => {calls.push({method,payload}); return {ok:true,result:{message_id:1}} as any;});
+  let updateId = 0;
+  const message = async (text:string) => bot.handleUpdate({update_id:++updateId,message:{message_id:updateId,date:1,chat:{id:9,type:"private"},from:{id:9,is_bot:false,first_name:"Test"},text,...(text.startsWith("/")?{entities:[{type:"bot_command",offset:0,length:text.split(" ")[0].length}]}:{})}} as any);
+  for (const id of ["days7","days18","days30"]) await message(`/buy ${id}`);
+  const invoices=calls.filter(x=>x.method==="sendInvoice");
+  assert.equal(invoices.length,3); for(const invoice of invoices) {assert.ok(invoice.payload.title.includes("TEST")); assert.equal(invoice.payload.prices[0].amount,1);}
+  await message(vpnTranslations.ru.button); assert.equal(vpnCalls,0);
+  await message("/refund_execute 9 charge"); assert.equal(calls.filter(x=>x.method==="refundStarPayment").length,0);
+  let begins = 0;
+  fake.refundBegin = async () => {begins++; return {status:"uncertain",ready:true,amount:1,currency:"XTR"};};
+  fake.refundConfirm = async () => "applied"; fake.refundReject = async () => true;
+  const refundBot = createBot(token,fake,9,{invoices:false,refunds:true}); refundBot.botInfo = bot.botInfo;
+  const refundCalls: string[] = [];
+  refundBot.api.config.use(async (_prev,method) => {refundCalls.push(method); return {ok:true,result:method === "refundStarPayment" ? true : {message_id:1}} as any;});
+  const update = (text:string) => ({update_id:++updateId,message:{message_id:updateId,date:1,chat:{id:9,type:"private"},from:{id:9,is_bot:false,first_name:"Test"},text,entities:[{type:"bot_command",offset:0,length:text.split(" ")[0].length}]}} as any);
+  await refundBot.handleUpdate(update("/buy days7")); assert.ok(!refundCalls.includes("sendInvoice"));
+  await refundBot.handleUpdate(update("/refund_execute 9 charge")); assert.equal(begins,1); assert.ok(refundCalls.includes("refundStarPayment"));
+  const root = mkdtempSync(join(tmpdir(),"stars-isolation-"));
+  mkdirSync(join(root,"app")); mkdirSync(join(root,"storage"));
+  const {readdirSync, writeFileSync, linkSync} = await import("fs");
+  for (const file of readdirSync("app").filter(x => /^[a-z_]+\.py$/.test(x))) copyFileSync(join("app",file),join(root,"app",file));
+  for (const file of ["service.py","journal_acl.ps1"]) copyFileSync(join("storage",file),join(root,"storage",file));
+  try {
+    const sandbox = prepareSandbox(root);
+    assert.equal(sandbox, join(root,".stars-test"));
+    const settingsFile = join(sandbox,"settings.env");
+    assert.throws(() => validateSettingsFile(root,sandbox));
+    writeFileSync(settingsFile,"TEST_ENVIRONMENT=telegram-test",{mode:0o600});
+    assert.equal(validateSettingsFile(root,sandbox), settingsFile);
+    assert.notEqual(join(sandbox,"users.sqlite3"),join(root,"users.sqlite3"));
+    assert.notEqual(join(sandbox,"payment-journal"),join(root,"payment-journal"));
+    writeFileSync(join(sandbox,"users.sqlite3"),"test");
+    prepareSandbox(root);
+    assert.equal((await import("fs")).readFileSync(join(sandbox,"users.sqlite3"),"utf8"),"test");
+    unlinkSync(join(sandbox,"users.sqlite3"));
+    writeFileSync(join(root,"users.sqlite3"),"working");
+    linkSync(join(root,"users.sqlite3"),join(sandbox,"users.sqlite3"));
+    assert.throws(() => prepareSandbox(root));
+    assert.equal((await import("fs")).readFileSync(join(root,"users.sqlite3"),"utf8"),"working");
+  } finally {
+    const sandbox = join(root,".stars-test");
+    if (existsSync(sandbox)) {
+      for (const dir of ["app","storage"]) {const p=join(sandbox,dir); if (existsSync(p)) {for (const name of readdirSync(p)) unlinkSync(join(p,name)); rmdirSync(p);}}
+      const db=join(sandbox,"users.sqlite3"); if(existsSync(db)) unlinkSync(db);
+      const settings=join(sandbox,"settings.env"); if(existsSync(settings)) unlinkSync(settings);
+      rmdirSync(sandbox);
+    }
+    for (const dir of ["app","storage"]) {for (const name of readdirSync(join(root,dir))) unlinkSync(join(root,dir,name)); rmdirSync(join(root,dir));}
+    if(existsSync(join(root,"users.sqlite3"))) unlinkSync(join(root,"users.sqlite3"));
+    rmdirSync(root);
+  }
+}
+
+async function main(): Promise<void> { await testHandlers(); await testPythonBridge(); await testAlertDelivery(); await testAlertQueueIntegration(); await testPaymentJournal(); await testStarHistoryPages(); await testJournalProcessCrash(); await testRefundFlow(); await testStarsIsolation(); }
 main().catch(error => { console.error(error); process.exitCode = 1; });
