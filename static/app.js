@@ -12,6 +12,10 @@
   const dialog = document.getElementById('dialog');
   const sourceLabel = document.createElement('p'); sourceLabel.className = 'muted account-source';
   document.querySelector('#home .status-card .status-line').before(sourceLabel);
+  const sourceInfo = document.createElement('p'); sourceInfo.className = 'muted account-source';
+  sourceLabel.after(sourceInfo);
+  const vpnSummary = document.createElement('p'); vpnSummary.className = 'muted account-source';
+  document.querySelector('#home .status-card .status-line').after(vpnSummary);
   const returnButton = document.createElement('button');
   returnButton.className = 'return-button';
   returnButton.type = 'button';
@@ -71,7 +75,7 @@
     const accountTag = document.querySelector('.date-label');
     if (preview) {
       banner.hidden = false; title.textContent = t.previewTitle; description.textContent = t.previewText;
-      dates.forEach(el => { el.textContent = '30.11.2026 UTC'; }); sourceLabel.hidden = true;
+      dates.forEach(el => { el.textContent = '30.11.2026 UTC'; }); sourceLabel.hidden = true; sourceInfo.hidden = true; vpnSummary.hidden = true;
     } else {
       accountTag.hidden = true;
       document.querySelector('[data-i18n="languageHelp"]').textContent = a.languageHelp;
@@ -79,13 +83,16 @@
       const sub = accountState === 'ready' ? account.subscription : null;
       const now = accountState === 'ready' ? account.server_time + (performance.now() - receivedAt) / 1000 : 0;
       lastActive = sub ? sub.expires_at > now : null;
-      const stateText = accountState !== 'ready' ? (accountState === 'loading' ? a.loading : a.error) : !sub ? a.none : sub.expires_at > now ? a.active : a.expired;
+      const presentation = accountState === 'ready' ? subscriptionPresentation(account, a, subscriptionExplanations[language], now, t.unknown) : null;
+      const stateText = presentation ? presentation.state : (accountState === 'loading' ? a.loading : a.error);
       status.forEach(el => { el.textContent = stateText; });
       dates.forEach(el => { el.textContent = sub ? new Date(sub.expires_at * 1000).toISOString().replace('T', ' ').replace('.000Z', ' UTC') : a.endNone; });
-      sourceLabel.hidden = !sub; sourceLabel.textContent = sub ? a[account.source] : '';
-      reminder.textContent = accountState === 'ready' ? (sub ? a[account.source] : '') : '';
-      vpnTitle.textContent = accountState !== 'ready' ? t.unknown : account.vpn === 'none' ? a.vpnNoneTitle : account.vpn === 'allowed' ? a.vpnAllowedTitle : account.vpn === 'revoked' ? a.vpnRevokedTitle : t.unknown;
-      vpnText.textContent = accountState !== 'ready' ? '' : account.vpn === 'none' ? a.vpnNone : account.vpn === 'allowed' ? a.vpnAllowed : account.vpn === 'revoked' ? a.vpnRevoked : a.vpnUnknown;
+      sourceLabel.hidden = !sub; sourceLabel.textContent = presentation?.source || '';
+      sourceInfo.hidden = !sub; sourceInfo.textContent = presentation?.explanation || '';
+      reminder.textContent = presentation && sub ? `${presentation.source}. ${presentation.explanation}` : '';
+      vpnSummary.hidden = !presentation; vpnSummary.textContent = presentation ? `VPN: ${presentation.vpnText}` : '';
+      vpnTitle.textContent = presentation ? presentation.vpnTitle : t.unknown;
+      vpnText.textContent = presentation ? presentation.vpnText : '';
     }
   }
   async function chooseLanguage(code) {

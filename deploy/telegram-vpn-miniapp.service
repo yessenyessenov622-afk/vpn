@@ -1,0 +1,24 @@
+[Unit]
+Description=VPN Mini App (temporary HTTPS test)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=telegram-vpn-bot
+Group=telegram-vpn-bot
+WorkingDirectory=/opt/telegram-vpn-bot/mini-app
+Environment=MINI_APP_CONFIG_PATH=/opt/telegram-vpn-bot/.env
+Environment=MINI_APP_DATABASE_PATH=/opt/telegram-vpn-bot/users.sqlite3
+ExecStart=/opt/telegram-vpn-bot/mini-app/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8765 --no-access-log
+Restart=on-failure
+RestartSec=5
+UMask=0077
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/telegram-vpn-bot
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

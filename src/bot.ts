@@ -1,10 +1,11 @@
-﻿import "dotenv/config";
+import "dotenv/config";
 import { Storage } from "./storage";
 import { createBot, parseAdminId } from "./handlers";
 import { AlertDispatcher } from "./alerts";
 import { PaymentJournal } from "./payment-journal";
 import { processBatch, replayJournal } from "./payment-polling";
 import { reconcileStarHistory } from "./star-history";
+import { paymentPlans, starsPrice } from "./payment-plans";
 import { join } from "path";
 
 const token = (process.env.BOT_TOKEN || "").trim();
@@ -15,6 +16,11 @@ if (!token) {
 const adminId = parseAdminId(process.env.ADMIN_ID);
 if (adminId === null) {
   console.error("Ошибка конфигурации: укажите положительный числовой Telegram ID в ADMIN_ID файла .env.");
+  process.exit(1);
+}
+
+if (process.env.STARS_PAYMENTS_ENABLED === "1" && paymentPlans.some(plan => starsPrice(process.env[plan.priceEnv]) === null)) {
+  console.error("Ошибка конфигурации Stars: проверьте цены для всех трёх тарифов.");
   process.exit(1);
 }
 

@@ -6,6 +6,7 @@ import { createBot, LanguageStorage, parseAdminId } from "./handlers";
 import { Language } from "./translations";
 import { describeSubscription, describeSubscriptionView, subscriptionTranslations } from "./subscription-translations";
 import { paymentTranslations } from "./payment-translations";
+import { paymentUiTranslations } from "./payment-ui-translations";
 import { Storage, Subscription } from "./storage";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmdirSync, unlinkSync } from "fs";
 import { tmpdir } from "os";
@@ -22,16 +23,30 @@ const supportKeys = Object.keys(supportTranslations.ru).sort().join(",");
 const subscriptionKeys = Object.keys(subscriptionTranslations.ru).sort().join(",");
 const planKeys = Object.keys(planTranslations.ru).sort().join(",");
 const vpnKeys = Object.keys(vpnTranslations.ru).sort().join(",");
-const preview = runInNewContext(readFileSync("static/translations.js", "utf8") + "; ({translations, translationKeys, translationRows, accountLabels})") as {translations: Record<string, Record<string,string>>; translationKeys: string[]; translationRows: Record<string,string>; accountLabels: Record<string,Record<string,string>>};
+const preview = runInNewContext(readFileSync("static/translations.js", "utf8") + "\n" + readFileSync("static/subscription-view.js", "utf8") + "; ({translations, translationKeys, translationRows, accountLabels, subscriptionExplanations, subscriptionPresentation})") as {translations: Record<string, Record<string,string>>; translationKeys: string[]; translationRows: Record<string,string>; accountLabels: Record<string,Record<string,string>>; subscriptionExplanations: Record<string,Record<string,string>>; subscriptionPresentation: (account: any, labels: any, notes: any, now: number, unknownVpnTitle: string) => any};
 assert.equal(Object.keys(preview.translations).length, 8);
 for (const code of Object.keys(preview.translations)) {
   assert.equal(preview.translationRows[code].split("|").length, preview.translationKeys.length);
   for (const key of preview.translationKeys) assert.ok(preview.translations[code][key]);
   assert.deepEqual(Object.keys(preview.accountLabels[code]).sort(), Object.keys(preview.accountLabels.ru).sort());
   for (const value of Object.values(preview.accountLabels[code])) assert.ok(value);
+  const labels=preview.accountLabels[code], notes=preview.subscriptionExplanations[code];
+  for (const source of ["test","paid","mixed","unknown"]) assert.ok(notes[source+"Explanation"]);
+  for (const vpn of ["none","unknown","allowed","revoked"]) {
+    const item=preview.subscriptionPresentation({subscription:{expires_at:200},source:"test",vpn},labels,notes,100,preview.translations[code].unknown);
+    assert.equal(item.state,labels.active); assert.equal(item.source,labels.test); assert.equal(item.explanation,notes.testExplanation);
+    assert.equal(item.vpnText, vpn === "none" ? labels.vpnNone : vpn === "allowed" ? labels.vpnAllowed : vpn === "revoked" ? labels.vpnRevoked : labels.vpnUnknown);
+  }
+  const unknown=preview.subscriptionPresentation({subscription:{expires_at:200},source:"unknown",vpn:"none"},labels,notes,100,preview.translations[code].unknown);
+  assert.equal(unknown.source,labels.unknown); assert.equal(unknown.explanation,notes.unknownExplanation);
+  const expired=preview.subscriptionPresentation({subscription:{expires_at:100},source:"test",vpn:"allowed"},labels,notes,100,preview.translations[code].unknown);
+  assert.equal(expired.state,labels.expired); assert.equal(expired.vpnText,labels.vpnAllowed);
+  const none=preview.subscriptionPresentation({subscription:null,source:"unknown",vpn:"none"},labels,notes,100,preview.translations[code].unknown);
+  assert.equal(none.state,labels.none); assert.equal(none.source,""); assert.equal(none.explanation,"");
 }
 for (const match of readFileSync("static/index.html", "utf8").matchAll(/data-i18n(?:-aria)?="([^"]+)"/g)) assert.ok(preview.translationKeys.includes(match[1]));
 const paymentKeys = Object.keys(paymentTranslations.ru).sort().join(",");
+const paymentUiKeys = Object.keys(paymentUiTranslations.ru).sort().join(",");
 assert.equal(typeof Bot, "function");
 assert.equal(Object.keys(languageNames).length, 8);
 for (const code of Object.keys(languageNames) as (keyof typeof languageNames)[]) {
@@ -47,6 +62,8 @@ for (const code of Object.keys(languageNames) as (keyof typeof languageNames)[])
   assert.equal(Object.keys(vpnTranslations[code]).sort().join(","), vpnKeys);
   for (const value of Object.values(vpnTranslations[code])) assert.ok(value.trim());
   assert.equal(Object.keys(paymentTranslations[code]).sort().join(","), paymentKeys);
+  assert.equal(Object.keys(paymentUiTranslations[code]).sort().join(","), paymentUiKeys);
+  for (const value of Object.values(paymentUiTranslations[code])) assert.ok(value.trim());
   for (const value of Object.values(paymentTranslations[code])) assert.ok(value.trim());
   for (const source of ["test", "paid", "mixed", "unknown"] as const) {
     for (const vpn of ["none", "unknown", "allowed", "revoked"] as const) {
@@ -54,12 +71,14 @@ for (const code of Object.keys(languageNames) as (keyof typeof languageNames)[])
       assert.ok(screen.includes(subscriptionTranslations[code].active));
       assert.ok(screen.includes(vpn === "none" ? paymentTranslations[code].vpnNone : vpn === "unknown" ? paymentTranslations[code].vpnUnknown : vpn === "allowed" ? paymentTranslations[code].vpnAllowed : paymentTranslations[code].vpnRevoked));
       assert.ok(screen.includes(source === "test" ? subscriptionTranslations[code].title : source === "paid" ? paymentTranslations[code].paid : source === "mixed" ? paymentTranslations[code].mixed : paymentTranslations[code].unknownSource));
+      assert.equal(screen.includes(subscriptionTranslations[code].notice), source === "test");
     }
   }
   assert.ok(describeSubscriptionView({subscription: null, source: "unknown", vpn: "none"}, code).includes(paymentTranslations[code].vpnNone));
   assert.ok(describeSubscriptionView({subscription: {started_at: 100, expires_at: 200}, source: "paid", vpn: "unknown"}, code, 200000).includes(subscriptionTranslations[code].expired));
 }
 assert.deepEqual(plans.map(plan => plan.days), [7, 18, 30]);
+assert.deepEqual(plans.map(plan => plan.stars), [80, 170, 260]);
 assert.equal(new Set(plans.map(plan => plan.id)).size, 3);
 assert.equal(initialLanguage("kk-KZ"), "kk");
 assert.equal(initialLanguage("xx"), "ru");
@@ -69,8 +88,15 @@ const exampleSubscription = { started_at: 1700000000, expires_at: 1700000060 };
 assert.ok(describeSubscription(exampleSubscription, "ru", 1700000059999).includes("Активна"));
 assert.ok(describeSubscription(exampleSubscription, "ru", 1700000060000).includes("Истекла"));
 assert.ok(describeSubscription(exampleSubscription, "ru", 1700000060000).includes("0 сек."));
+const testUnknown = describeSubscriptionView({subscription: exampleSubscription, source:"test", vpn:"unknown"}, "ru", 1700000050000);
+assert.ok(testUnknown.includes("оплата за неё не проводилась"));
+assert.ok(testUnknown.includes(paymentTranslations.ru.vpnUnknown));
+assert.ok(!testUnknown.includes("VPN-доступ не предоставляется"));
+assert.ok(!describeSubscriptionView({subscription:exampleSubscription,source:"unknown",vpn:"none"}, "ru", 1700000050000).includes(subscriptionTranslations.ru.notice));
 
 async function testHandlers(): Promise<void> {
+  process.env.STARS_PAYMENTS_ENABLED = "0";
+  delete process.env.STARS_PRICE_7; delete process.env.STARS_PRICE_18; delete process.env.STARS_PRICE_30;
   const languages = new Map<number, Language>();
   const registered = new Set<number>();
   const subscriptions = new Map<number, Subscription>();
@@ -218,6 +244,7 @@ async function testHandlers(): Promise<void> {
   for (const plan of plans) {
     await click(one, `plans:${plan.id}`);
     assert.ok(last().text.includes(plan.names.en));
+    assert.ok(last().text.includes(`${plan.stars} Stars`));
     assert.ok(last().text.includes(`${plan.days} ${planTranslations.en.days}`));
     assert.ok(last().text.includes(planTranslations.en.notice));
     assert.deepEqual(last().reply_markup.inline_keyboard.flat().map((button: any) => button.callback_data), ["plans:list", "plans:home"]);
@@ -261,7 +288,8 @@ async function testHandlers(): Promise<void> {
   await message(admin, "/grant_test 55555 7");
   assert.ok(last().text.includes("не зарегистрирован"));
   await message(admin, `/grant_test ${one} 7`);
-  assert.ok(last().text.includes("Тестовая подписка"));
+  assert.ok(last().text.includes("Тестовый срок"));
+  assert.ok(last().text.includes("Оплата за эту выдачу не проводилась"));
   const firstEnd = subscriptions.get(one)!.expires_at;
   await message(admin, `/grant_test ${one} 2`);
   assert.equal(subscriptions.get(one)!.expires_at, firstEnd + 2 * 86400);
@@ -353,6 +381,29 @@ async function testHandlers(): Promise<void> {
   await click(admin, firstButton);
   await message(admin, "Undeliverable reply");
   assert.equal(last().text, "Не удалось отправить ответ пользователю. Попробуйте позже.");
+  process.env.STARS_PAYMENTS_ENABLED = "1";
+  process.env.STARS_PRICE_7 = "80"; process.env.STARS_PRICE_18 = "170"; process.env.STARS_PRICE_30 = "260";
+  const orderAmounts: number[] = [];
+  storage.paymentOrder = async (_user, _planId, amount) => { orderAmounts.push(amount); return {order_id: `order-${orderAmounts.length}`}; };
+  const paidBot = createBot("123456:example", storage, admin);
+  paidBot.botInfo = bot.botInfo;
+  const invoices: any[] = [];
+  paidBot.api.config.use(async (_previous, method, payload) => {
+    if (method === "sendInvoice") { invoices.push(payload); return {ok:true,result:{message_id:invoices.length}} as any; }
+    if (method === "sendMessage") return {ok:true,result:{message_id:invoices.length+1}} as any;
+    if (method === "answerCallbackQuery") return {ok:true,result:true} as any;
+    throw new Error(`Unexpected API method: ${method}`);
+  });
+  let paidUpdateId = 0;
+  const paidMessage = (text: string) => paidBot.handleUpdate({update_id:++paidUpdateId,message:{message_id:paidUpdateId,date:1,chat:{id:one,type:"private"},from:{id:one,is_bot:false,first_name:"Test"},text,entities:[{type:"bot_command",offset:0,length:text.split(" ")[0].length}]}} as any);
+  const paidClick = (data: string) => paidBot.handleUpdate({update_id:++paidUpdateId,callback_query:{id:String(paidUpdateId),from:{id:one,is_bot:false,first_name:"Test"},chat_instance:"test",data,message:{message_id:1,date:1,chat:{id:one,type:"private"}}}} as any);
+  await paidMessage("/buy days7"); await paidMessage("/buy days18"); await paidMessage("/buy days30");
+  await paidMessage(planTranslations.ru.button); await paidClick("plans:three"); await paidClick("plans:buy_days18");
+  assert.deepEqual(invoices.map(invoice => invoice.prices[0].amount), [80,170,260,170]);
+  assert.deepEqual(orderAmounts, [80,170,260,170]);
+  assert.equal(invoices.every(invoice => invoice.currency === "XTR"), true);
+  assert.ok(paymentUiTranslations.en.readyNotice.includes("Telegram confirms the payment"));
+  process.env.STARS_PAYMENTS_ENABLED = "0";
   console.log("Переводы, команды, доступ, доставка и отмена: OK");
 }
 

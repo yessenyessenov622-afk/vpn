@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 
 from app import database
 from app.auth import AuthError, validate_init_data
-from app.main import app
+from app.main import app, validate_existing_database
 from bot import valid_url
 
 TOKEN = "123456:test-token"
@@ -48,6 +48,32 @@ class AuthTests(unittest.TestCase):
         self.assertTrue(valid_url("https://example.com/"))
         for url in ("", "http://example.com", "https://localhost", "https://127.0.0.1", "https://example.com:bad"):
             self.assertFalse(valid_url(url))
+
+    def test_configured_database_must_exist_and_have_required_schema(self):
+        with tempfile.TemporaryDirectory() as folder:
+            missing = Path(folder) / 'missing.sqlite3'
+            with self.assertRaises(RuntimeError): validate_existing_database(str(missing))
+            self.assertFalse(missing.exists())
+            database.initialize(missing)
+            validate_existing_database(str(missing))
+            with closing(sqlite3.connect(missing)) as connection, connection:
+                connection.execute('DROP TABLE subscription_sources')
+            with self.assertRaises(RuntimeError): validate_existing_database(str(missing))
+            with closing(sqlite3.connect(missing)) as connection:
+                self.assertIsNone(connection.execute("SELECT 1 FROM sqlite_master WHERE name='subscription_sources'").fetchone())
+
+    def test_configured_database_is_used_without_initializing_another(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'live-test.sqlite3'
+            database.initialize(path)
+            database.register_user(101, path)
+            database.grant_subscription(101, 7, path, now=int(time.time()))
+            with patch.dict(os.environ, {'BOT_TOKEN': TOKEN, 'MINI_APP_DATABASE_PATH': str(path)}):
+                with TestClient(app) as client:
+                    headers = {'X-Telegram-Init-Data': signed_data(101)}
+                    self.assertEqual(client.get('/api/account', headers=headers).json()['source'], 'test')
+                    self.assertEqual(client.put('/api/settings', headers=headers, json={'language':'de'}).status_code, 200)
+            self.assertEqual(database.get_language(101, path), 'de')
 
 
 class ApiTests(unittest.TestCase):

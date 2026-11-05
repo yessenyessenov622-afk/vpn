@@ -11,3 +11,17 @@ export const planTranslations: Record<Language, PlanTexts> = {
   de: {button:"💎 Tarife", list:"Wählen Sie einen zukünftigen Tarif. Preise und Zahlung folgen später.", days:"Tage", duration:"Laufzeit", notice:"Dies ist ein Tarif zur Information. Zahlung und VPN-Verbindung folgen später.", back:"← Zur Tarifübersicht", home:"🏠 Hauptmenü", homeMessage:"Hauptmenü.", busy:"Bitte schließen Sie Ihre aktuelle Nachricht zuerst ab oder brechen Sie sie ab."},
   es: {button:"💎 Tarifas", list:"Elige una tarifa futura. Los precios y el pago llegarán más adelante.", days:"días", duration:"Duración", notice:"Esta es una tarifa informativa. El pago y la conexión VPN llegarán más adelante.", back:"← Volver a tarifas", home:"🏠 Menú principal", homeMessage:"Menú principal.", busy:"Primero termina o cancela tu mensaje actual."}
 };
+
+const futurePayment: Record<Language, { list: string; notice: string }> = {
+  ru: { list: 'Выберите тариф. Оплата пока недоступна.', notice: 'Оплата пока недоступна.' },
+  en: { list: 'Choose a plan. Payment is not available yet.', notice: 'Payment is not available yet.' },
+  kk: { list: 'Тарифті таңдаңыз. Төлем әзірге қолжетімсіз.', notice: 'Төлем әзірге қолжетімсіз.' },
+  tr: { list: 'Bir tarife seçin. Ödeme henüz kullanılamıyor.', notice: 'Ödeme henüz kullanılamıyor.' },
+  uz: { list: 'Tarifni tanlang. To‘lov hali mavjud emas.', notice: 'To‘lov hali mavjud emas.' },
+  ky: { list: 'Тарифти тандаңыз. Төлөм азырынча жеткиликсиз.', notice: 'Төлөм азырынча жеткиликсиз.' },
+  de: { list: 'Wählen Sie einen Tarif. Die Zahlung ist noch nicht verfügbar.', notice: 'Die Zahlung ist noch nicht verfügbar.' },
+  es: { list: 'Elige una tarifa. El pago aún no está disponible.', notice: 'El pago aún no está disponible.' }
+};
+for (const language of Object.keys(futurePayment) as Language[]) {
+  Object.assign(planTranslations[language], futurePayment[language]);
+}

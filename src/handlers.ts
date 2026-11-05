@@ -4,6 +4,7 @@ import { supportTranslations } from "./support-translations";
 import { describeSubscriptionView, subscriptionTranslations, utcDate } from "./subscription-translations";
 import { Subscription, SubscriptionView, VPNResponse } from "./storage";
 import { paymentTranslations } from "./payment-translations";
+import { paymentUiTranslations } from "./payment-ui-translations";
 import { plans } from "./plans";
 import { planTranslations } from "./plan-translations";
 import { vpnTranslations } from "./vpn-translations";
@@ -59,12 +60,30 @@ export function createBot(token: string, storage: LanguageStorage, adminId: numb
     const language = await currentLanguage(ctx);
     await ctx.reply(translations[language].choose, { reply_markup: choices() });
   }
+  function paymentsEnabled(): boolean {
+    return test ? test.invoices : process.env.STARS_PAYMENTS_ENABLED === "1";
+  }
+  function priceForPlan(plan: typeof paymentPlans[number]): number {
+    return test?.invoices ? 1 : starsPrice(process.env[plan.priceEnv]) ?? plans.find(item => item.days === plan.days)!.stars;
+  }
   async function showPlans(ctx: Context, language: Language): Promise<void> {
     const t = planTranslations[language];
     const keyboard = new InlineKeyboard();
-    for (const plan of plans) keyboard.text(`${plan.names[language]} — ${plan.days} ${t.days}`, `plans:${plan.id}`).row();
+    for (const plan of plans) keyboard.text(`${plan.names[language]} ? ${priceForPlan(paymentPlans.find(item => item.days === plan.days)!)} Stars`, `plans:${plan.id}`).row();
     keyboard.text(t.home, "plans:home");
-    await ctx.reply(t.list, { reply_markup: keyboard });
+    await ctx.reply(paymentsEnabled() ? paymentUiTranslations[language].readyList : t.list, { reply_markup: keyboard });
+  }
+  async function sendPlanInvoice(ctx: Context, plan: typeof paymentPlans[number], language: Language): Promise<void> {
+    const price = test?.invoices ? 1 : starsPrice(process.env[plan.priceEnv]);
+    if (!paymentsEnabled() || price === null || price === undefined || !storage.paymentOrder) {
+      await ctx.reply(paymentTranslations[language].unavailable);
+      return;
+    }
+    try {
+      const order = await storage.paymentOrder(ctx.from!.id, plan.id, price);
+      const label = `${plan.days} ${planTranslations[language].days}`;
+      await ctx.replyWithInvoice(test ? `TEST: ${label}` : label, test ? `TEST ONLY ? ${label}; no VPN service` : `${paymentTranslations[language].paid}: ${label}`, order.order_id, "XTR", [{label, amount: price}]);
+    } catch (_) { await ctx.reply(paymentTranslations[language].invoiceError); }
   }
 
   bot.on("pre_checkout_query", async ctx => {
@@ -139,17 +158,8 @@ export function createBot(token: string, storage: LanguageStorage, adminId: numb
   bot.command("buy", async ctx => {
     const language = await currentLanguage(ctx);
     const plan = paymentPlans.find(p => p.id === ctx.match.trim());
-    const price = plan ? (test?.invoices ? 1 : starsPrice(process.env[plan.priceEnv])) : null;
-    // This stage is local preparation only; a deliberate code change is required before real invoices.
-    const salesReady = false;
-    if (!plan || (!(salesReady && process.env.STARS_PAYMENTS_ENABLED === "1") && !test?.invoices) || price === null || !storage.paymentOrder) {
-      await ctx.reply(paymentTranslations[language].unavailable); return;
-    }
-    try {
-      const order = await storage.paymentOrder(ctx.from!.id, plan.id, price);
-      const label = `${plan.days} ${planTranslations[language].days}`;
-      await ctx.replyWithInvoice(test ? `TEST: ${label}` : label, test ? `TEST ONLY — ${label}; no VPN service` : `${paymentTranslations[language].paid}: ${label}`, order.order_id, "XTR", [{label, amount: price}]);
-    } catch (_) { await ctx.reply(paymentTranslations[language].invoiceError); }
+    if (!plan) { await ctx.reply(paymentTranslations[language].unavailable); return; }
+    await sendPlanInvoice(ctx, plan, language);
   });
   bot.on("message:successful_payment", async ctx => {
     const p = ctx.message.successful_payment;
@@ -204,7 +214,7 @@ export function createBot(token: string, storage: LanguageStorage, adminId: numb
       await ctx.reply("Пользователь не зарегистрирован. Попросите его открыть бота и отправить /start.");
       return;
     }
-    await ctx.reply(`Тестовая подписка для ID ${userId} выдана. Начало: ${utcDate(subscription.started_at)}. Окончание: ${utcDate(subscription.expires_at)}. Это не оплата и не VPN-доступ.`);
+    await ctx.reply(`Тестовый срок для ID ${userId} выдан. Начало: ${utcDate(subscription.started_at)}. Окончание: ${utcDate(subscription.expires_at)}. Оплата за эту выдачу не проводилась. Состояние VPN определяется отдельно.`);
   });
   bot.callbackQuery(/^language:([a-z]{2})$/, async ctx => {
     const language = ctx.match[1];
@@ -233,11 +243,21 @@ export function createBot(token: string, storage: LanguageStorage, adminId: numb
       await showPlans(ctx, language);
       return;
     }
+    if (action.startsWith("buy_")) {
+      const paymentPlan = paymentPlans.find(item => item.id === action.slice(4));
+      await ctx.answerCallbackQuery();
+      if (paymentPlan) await sendPlanInvoice(ctx, paymentPlan, language);
+      else await ctx.reply(paymentTranslations[language].unavailable);
+      return;
+    }
     const plan = plans.find(item => item.id === action);
     if (!plan) { await ctx.answerCallbackQuery(); return; }
     await ctx.answerCallbackQuery();
-    const keyboard = new InlineKeyboard().text(t.back, "plans:list").row().text(t.home, "plans:home");
-    await ctx.reply(`${plan.names[language]}\n${t.duration}: ${plan.days} ${t.days}\n\n${t.notice}`, { reply_markup: keyboard });
+    const paymentPlan = paymentPlans.find(item => item.days === plan.days)!;
+    const keyboard = new InlineKeyboard();
+    if (paymentsEnabled()) keyboard.text(`${paymentUiTranslations[language].buy} ? ${priceForPlan(paymentPlan)} Stars`, `plans:buy_${paymentPlan.id}`).row();
+    keyboard.text(t.back, "plans:list").row().text(t.home, "plans:home");
+    await ctx.reply(`${plan.names[language]}\n${t.duration}: ${plan.days} ${t.days}\n${priceForPlan(paymentPlan)} Stars\n\n${paymentsEnabled() ? paymentUiTranslations[language].readyNotice : t.notice}`, { reply_markup: keyboard });
   });
 
   bot.callbackQuery(/^support_reply:(\d+):([a-z]{2})$/, async ctx => {
